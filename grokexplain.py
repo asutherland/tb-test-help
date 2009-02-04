@@ -97,6 +97,7 @@ class Cursor(object):
         self.closedAt = kwargs.pop('closedAt', None)
 
         self.writesAffectedBy = set()
+        self.seeksAffectedBy = set()
 
     def __str__(self):
         return 'Cursor %d on %s' % (self.handle, self.on,)
@@ -169,10 +170,12 @@ class GenericOpInfo(object):
     '''
     Simple op meta-info.
     '''
-    def __init__(self, addr, name, params):
+    def __init__(self, addr, name, params, comment):
         self.addr = addr
         self.name = name
         self.params = params
+        self.comment = comment
+
         self.comeFrom = []
         self.goTo = []
         self.births = []
@@ -183,6 +186,7 @@ class GenericOpInfo(object):
         self.usesImmediate = None
         self.usesCursor = None
         self.writesCursor = None
+        self.seeksCursor = None
         self.usesColumns = None
         self.terminate = False
 
@@ -214,7 +218,7 @@ class GenericOpInfo(object):
                 s += ' %s' % (self.usesCursor.on.name,)
 
         if self.usesImmediate is not None:
-            s += ' imm ' + str(self.usesImmediate)
+            s += ' imm %s' % (self.usesImmediate)
 
         if self.usesColumns:
             schema = self.usesCursor.on.schema
@@ -223,6 +227,14 @@ class GenericOpInfo(object):
                 for colNum in self.usesColumns:
                     colNames.append(schema.columns[colNum])
                 s += ' col %s' % (', '.join(colNames))
+
+        if self.regReads:
+            s += ' using r%s' % (', r'.join(map(str, self.regReads)),)
+        if self.regWrites:
+            s += ' to r%s' % (', r'.join(map(str, self.regWrites)),)
+
+        if self.comment:
+            s += " <font color='#888888'>%s</font>" % (self.comment,)
 
         return s
 
@@ -309,10 +321,11 @@ class ExplainGrokker(object):
         self.op.affectedByCursors.add(cursor)
         return cursor
 
-    def _getCursor(self, handle, write=False):
+    def _getCursor(self, handle, write=False, seek=False):
         cursor = self.cursorByHandle[handle]
         self.op.usesCursor = cursor
         self.op.writesCursor = write
+        self.op.seeksCursor = seek
         self.op.affectedByCursors.add(cursor)
         return cursor
 
@@ -327,7 +340,7 @@ class ExplainGrokker(object):
         if handle not in self.cursorByHandle:
             print 'Warning; tried to close a non-open cursor; might be our bad'
             return
-        cursor = self.cursorByHandle[handle]
+        cursor = self._getCursor(handle)
         self._killThing(cursor)
 
     def _op_OpenCommon(self, params, writable):
@@ -393,8 +406,12 @@ class ExplainGrokker(object):
     def _jump(self, target):
         self.op.goTo.append(target)
 
+    def _op_Seek(self, params):
+        self._getCursor(params[0], False, True)
+        self.op.regReads.append(params[1])
+
     def _op_SeekCommon(self, params, comparison):
-        cursor = self._getCursor(params[0])
+        cursor = self._getCursor(params[0], False, True)
         if isinstance(cursor.on, Table):
             self.op.regReads.append(params[2])
         else:
@@ -425,22 +442,30 @@ class ExplainGrokker(object):
     def _op_IdxRowid(self, params):
         self._getCursor(params[0])
         self.op.regWrites.append(params[1])
+    def _op_Rowid(self, params):
+        self._op_IdxRowid(params)
+
+    def _op_NotExists(self, params):
+        self._getCursor(params[0], False, True)
+        self._condJump(params[2], params[1])
 
     def _op_Found(self, params):
-        self._getCursor(params[0])
+        self._getCursor(params[0], False, True)
         self._condJump(params[2], params[1])
     def _op_NotFound(self, params):
         self._op_Found(params)
 
     def _op_VFilter(self, params):
-        self._getCursor(params[0])
+        self._getCursor(params[0], False, True)
         # +1 is actually argc, which we can't see with a bit'o'legwork
         # TODOMAYBE: fancy legwork if we can statically know the argc
-        self.op.regReads.extend([params[2], params[2]+1])
+        self.op.regReads.extend([params[2], params[2]+1,
+                                 # however, we do know it must be >= 1
+                                 params[2] + 2])
         self._condJump(None, params[1])
 
     def _op_VNext(self, params):
-        self._getCursor(params[0])
+        self._getCursor(params[0], False, True)
         self._condJump(None, params[1])
     def _op_Next(self, params):
         self._op_VNext(params)
@@ -448,7 +473,7 @@ class ExplainGrokker(object):
         self._op_VNext(params)
 
     def _op_Last(self, params):
-        self._getCursor(params[0])
+        self._getCursor(params[0], False, True)
         if params[1]:
             self._condJump(None, params[1])
     def _op_Rewind(self, params):
@@ -518,6 +543,19 @@ class ExplainGrokker(object):
     def _op_IfNot(self, params):
         self._condJump([params[0]], params[1])
 
+    def _op_Eq(self, params):
+        self._condJump([params[0], params[2]], params[1])
+    def _op_Ne(self, params):
+        self._condJump([params[0], params[2]], params[1])
+    def _op_Lt(self, params):
+        self._condJump([params[0], params[2]], params[1])
+    def _op_Le(self, params):
+        self._condJump([params[0], params[2]], params[1])
+    def _op_Gt(self, params):
+        self._condJump([params[0], params[2]], params[1])
+    def _op_Ge(self, params):
+        self._condJump([params[0], params[2]], params[1])
+
     def _op_IfZero(self, params):
         self._condJump([params[0]], params[1])
 
@@ -554,6 +592,7 @@ class ExplainGrokker(object):
 
     def _op_Blob(self, params):
         self.op.regWrites.append(params[1])
+        self.op.usesImmediate = '(blob)'
 
     def _op_Null(self, params):
         self.op.regWrites.append(params[1])
@@ -581,13 +620,13 @@ class ExplainGrokker(object):
             addr = int(bits[0])
             opcode = bits[1]
             params = chewParams(bits[2:7])
-            # comment = bits[7]
+            comment = bits[7].strip()
 
             # opcode renaming compensation...
             if opcode.startswith('Move') and len(opcode) > 4:
                 opcode = opcode.replace('Move', 'Seek')
 
-            self.op = GenericOpInfo(addr, opcode, params)
+            self.op = GenericOpInfo(addr, opcode, params, comment)
             self.code.append(self.op)
 
             handler = getattr(self, "_op_" + opcode, None)
@@ -655,6 +694,8 @@ class ExplainGrokker(object):
         f = open(outpath, 'r')
         #tmpf.seek(0, 0)
         buf = f.read()
+        #buf = buf.replace('\\\n>', '>\\\n').replace('\\\n"', '"\\\n')
+        buf = buf.replace('\\\n', '')
         buf = buf.replace('"<<', '<').replace('>>"', '>').replace('\\n', '<br align="left"/>')
         buf = buf.replace('\\\\\nn', '\\\n<br align="left"/>')
         f.close()
@@ -714,6 +755,8 @@ class ExplainGrokker(object):
 
                 if op.writesCursor: # implies usesCursor
                     op.usesCursor.writesAffectedBy.update(op.affectedByCursors)
+                if op.seeksCursor:
+                    op.usesCursor.seeksAffectedBy.update(op.affectedByCursors)
 
                 # affect the output registers
                 for reg in op.regWrites:
@@ -757,7 +800,14 @@ class ExplainGrokker(object):
         for cursor in self.cursors:
             for originCursor in cursor.writesAffectedBy:
                 g.add_edge(originCursor.id, cursor.id)
+            for originCursor in cursor.seeksAffectedBy:
+                g.add_edge(originCursor.id, cursor.id, color="#cccccc")
 
+        for result_op in self.resultRowOps:
+            for cursor in result_op.affectedByCursors:
+                g.add_edge(cursor.id, "Results")
+
+        g.node_attr['fontsize'] = '10'
         self._graphvizRenderHelper(g, outpath)
 
 
