@@ -4,7 +4,11 @@ import datetime
 def listify_delta_hash(d, tstart, tend):
     vals = [0] * (tend - tstart + 1)
     for key, val in d.items():
-        vals[key - tstart] = val
+        if key < tstart or key > tend:
+            sys.stderr.write('Key %d outside bounds of %d-%d' % (
+                    key, tstart, tend))
+        else:
+            vals[key - tstart] = val
     return vals
 
 class FDInfo(object):
@@ -83,6 +87,7 @@ class STraceGrokker(object):
         pass
 
     def grokFile(self, filename):
+        self.grokking_file = filename
         f = open(filename, 'r')
         try:
             self.grok(f)
@@ -147,7 +152,7 @@ class STraceGrokker(object):
         secs, usecs = args[0]
         self.timestamp = secs
 
-        if self.firstTimestamp is None:
+        if self.firstTimestamp == 0:
             self.firstTimestamp = secs
         self.lastTimestamp = secs
 
@@ -187,13 +192,25 @@ class STraceGrokker(object):
         fd = self._get_fd(args[0])
         # meh, could do something here I guess
 
+    def _procfunc_recv(self, info, args):
+        self._fd_read(args[0], info.rval)
+
+    def _procfunc_send(self, info, args):
+        self._fd_write(args[0], info.rval)
+
     def _init_file_state(self):
         self.fd_info = {}
-        self.firstTimestamp = None
-        self.lastTimestamp = None
+        self.timestamp = 0
+        self.firstTimestamp = 0
+        self.lastTimestamp = 0
         self.gen_call_stats = {}
 
     def summarize(self):
+        if self.grokking_file:
+            print '*' * 80
+            print '* File:', self.grokking_file
+            print '*' * 80
+
         tdelta = self.lastTimestamp - self.firstTimestamp
         print tdelta, 'seconds of strace'
         print
@@ -205,8 +222,11 @@ class STraceGrokker(object):
         print 'General call distribution stats:'
         for func_name in sorted(self.gen_call_stats.keys()):
             call_stats = self.gen_call_stats[func_name]
-            print '%s: %s' % (func_name, listify_delta_hash(
-                    call_stats, self.firstTimestamp, self.lastTimestamp))
+            listified = listify_delta_hash(call_stats, self.firstTimestamp, self.lastTimestamp)
+            print '%s: %d = %s' % (func_name, sum(listified), listified)
+
+        print
+        print
 
     def grok(self, filey):
         self._init_file_state()
