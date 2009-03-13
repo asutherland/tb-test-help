@@ -53,9 +53,9 @@ class FDInfo(object):
         print 'fd:', self.handle, self.filename
         print ' first accessed at:', self.firstAccess - stime
         print ' last accessed at:', self.lastAccess - stime
-        print ' %d reads (%d zero reads) totaling %d' % (
+        print ' %d reads (%d zero reads) totaling %d bytes' % (
             self.countReads, self.countZeroReads, self.totalReadBytes)
-        print '', self.countWrites, 'writes totaling', self.totalWrittenBytes
+        print '', self.countWrites, 'writes totaling', self.totalWrittenBytes, 'bytes'
         print '', self.totalStats, 'stats'
         print '', self.totalSeeks, 'seeks'
         print
@@ -63,6 +63,10 @@ class FDInfo(object):
             self.readCountStats, self.firstAccess, self.lastAccess)
         print ' writes per sec:', listify_delta_hash(
             self.writeCountStats, self.firstAccess, self.lastAccess)
+        print ' read bytes per sec:', listify_delta_hash(
+            self.readBytesStats, self.firstAccess, self.lastAccess)
+        print ' written bytes per sec:', listify_delta_hash(
+            self.writtenBytesStats, self.firstAccess, self.lastAccess)
         print ' stats per sec:', listify_delta_hash(
             self.statCountStats, self.firstAccess, self.lastAccess)
         print ' seeks per sec:', listify_delta_hash(
@@ -147,12 +151,6 @@ class STraceGrokker(object):
             self.firstTimestamp = secs
         self.lastTimestamp = secs
 
-    def _procfunc_select(self, info, args):
-        pass
-
-    def _procfunc_poll(self, info, args):
-        pass
-
     def _procfunc_open(self, info, args):
         self._fd_open(args[0], args[1], info.rval)
 
@@ -162,6 +160,10 @@ class STraceGrokker(object):
     def _procfunc_read(self, info, args):
         fd, iov, iovcnt = args
         self._fd_read(fd, info.rval)
+
+    def _procfunc_write(self, info, args):
+        fd, buf, cnt = args
+        self._fd_write(fd, info.rval)
 
     def _procfunc_writev(self, info, args):
         fd, iov, iovcnt = args
@@ -175,10 +177,21 @@ class STraceGrokker(object):
         fd, offset, result, whence = args
         self._fd_seek(fd)
 
+    # -- sockets... slightly different idiom
+
+    def _procfunc_connect(self, info, args):
+        fd = self._get_fd(args[0], args[1].sin_addr[1])
+        fd.observeEvent('connect', self.timestamp)
+
+    def _procfunc_getpeername(self, info, args):
+        fd = self._get_fd(args[0])
+        # meh, could do something here I guess
+
     def _init_file_state(self):
         self.fd_info = {}
         self.firstTimestamp = None
         self.lastTimestamp = None
+        self.gen_call_stats = {}
 
     def summarize(self):
         tdelta = self.lastTimestamp - self.firstTimestamp
@@ -188,9 +201,19 @@ class STraceGrokker(object):
             fd = self.fd_info[fdh]
             fd.summarize(self.firstTimestamp, tdelta)
 
+        print '!' * 60
+        print 'General call distribution stats:'
+        for func_name in sorted(self.gen_call_stats.keys()):
+            call_stats = self.gen_call_stats[func_name]
+            print '%s: %s' % (func_name, listify_delta_hash(
+                    call_stats, self.firstTimestamp, self.lastTimestamp))
+
     def grok(self, filey):
         self._init_file_state()
         for line in filey:
+            # ignore this
+            if line.startswith('restart_syscall('):
+                continue
             try:
                 info = funcLine.parseString(line)
             except Exception, e:
@@ -204,6 +227,11 @@ class STraceGrokker(object):
             args = info.args
             if handler:
                 handler(info, args)
+
+            call_stats = self.gen_call_stats.get(func_name, None)
+            if call_stats is None:
+                call_stats = self.gen_call_stats[func_name] = {}
+            call_stats[self.timestamp] = 1 + call_stats.get(self.timestamp, 0)
 
         self.summarize()
 

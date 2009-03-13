@@ -39,8 +39,9 @@ pNamedStruct = pyp.Group(pyp.Dict(supLBrace + pKeyValPairs + supRBrace))
 pAnonStruct = supLBrace + pValues + supRBrace
 pStruct = (pNamedStruct | pAnonStruct)
 pList = supLBracket + pValues + supRBracket
+pCasty = pyp.Group(pConstant + supLParen + pValue + supRParen)
 
-pValue << (pPtr | pAggNums | pStr | pStruct | pList)
+pValue << (pPtr | pCasty | pAggNums | pStr | pStruct | pList)
 pValues << pyp.Group(pyp.Optional(pyp.delimitedList(pValue)))
 
 pParenData = pyp.Optional(pyp.Literal('in')|pyp.Literal('out')) + pList
@@ -52,8 +53,8 @@ funcLine = (funcName + supLParen +
             funcArgs.setResultsName('args')+
             supRParen + supEquals +
             pNum.setResultsName('rval') +
-            pyp.Optional(pConstant).setResultsName('rconst') +
-            pyp.Optional(pOutInfo).setResultsName('rout'))
+            pyp.Optional(pConstant).setResultsName('err') +
+            pyp.Optional(pOutInfo).setResultsName('errexpl'))
 
 #pPtr.setParseAction(lambda s, l, toks: int(toks[0], 16))
 
@@ -110,6 +111,7 @@ read(3, "\1\0013\316\0\0\0\0|\0\0\0\220\22 \1E\1u\0E\1u\0\0\0\0\0\370\236\246\10
 stat64("/foo/bar/baz", {st_mode=S_IFREG|0644, st_size=1997, ...}) = 0
 clone(foo=0, bar=0) = 0
 clone(child_stack=0xb42ff464, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, parent_tidptr=0xb42ffbd8, {entry_number:6, base_addr:0xb42ffb90, limit:1048575, seg_32bit:1, contents:0, read_exec_only:0, limit_in_pages:1, seg_not_present:0, useable:1}, child_tidptr=0xb42ffbd8) = 6928
+connect(60, {sa_family=AF_INET, sin_port=htons(993), sin_addr=inet_addr("72.249.41.52")}, 16) = -1 EINPROGRESS (Operation now in progress)
 '''
 
     for line in lines.splitlines():
