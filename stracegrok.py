@@ -123,10 +123,10 @@ class STraceGrokker(object):
         fd.countReads += 1
         if bytes > 0:
             fd.totalReadBytes += bytes
+            fd.readBytesStats[self.timestamp] = bytes + fd.readBytesStats.get(self.timestamp, 0)
         else:
             fd.countZeroReads += 1
         fd.readCountStats[self.timestamp] = 1 + fd.readCountStats.get(self.timestamp, 0)
-        fd.readBytesStats[self.timestamp] = bytes + fd.readBytesStats.get(self.timestamp, 0)
 
     def _fd_write(self, fdh, bytes):
         fd = self._get_fd(fdh)
