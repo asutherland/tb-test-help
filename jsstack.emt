@@ -45,14 +45,21 @@ int _tssSP;
 int
 curthrptr()
 {
+  ## __per_cpu_start => 0xc07c7000
   ## per_cpu__init_tss => 0xc07cdf80
+  ## tss rel => 0x6f80
   ## x86_hw_tss is at offset 0 in tss_struct
   ## sp0 is at 0x4 (and sp1 is at 0xc)
   ## _tssSP = guestload32(0xc07cdf84);
-  ## just directly read from the symbol, and we want what is in the
-  ##  upper word because x86 is little endian.  (we want the second word)
 
-  _tssSP = getguest("per_cpu__init_tss") >> 32;
+  _perCPUOffset = guestload32(0xc073e9a0);
+
+  _tssSP = guestload32(_perCPUOffset + 0xc07cdf80 + 0x4);
+
+  ## __smp_locks => c0744000
+  ## if we are in the kernel, tssSP0 may point at __smp_locks
+  if (_tssSP == 0xc0744000)
+    _tssSP = RSP;
 
   ## let us assume we are single-processor for now
   ## (otherwise we would probably want to check __per_cpu_offset)
@@ -63,8 +70,8 @@ curthrptr()
 ##      _nameOffset = 0x318; ## offatstrcpy("get_task_comm");
 ##   }
 ##   return RSP & 0xfffff000;
- printf("tssSP: %x\n", _tssSP);
-  return _tssSP & 0xfffff000;
+  ## for my systems, it would appear we are not using 4k pages
+  return _tssSP & 0xffffe000;
 }
 
 string
@@ -182,9 +189,7 @@ void dump_js_stack() {
 }
 
 USEC:100000 {
-  printf("in %s\n", curprocname());
   if (!strcmp(curprocname(), "thunderbird-bin")) {
-    printf("in thunderbird!\n");
     dump_js_stack();
   }
 }
