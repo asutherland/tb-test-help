@@ -95,13 +95,10 @@ int pthread_getspecific(int key) {
   ## thread_struct offset is 0x33c
   ## tls descriptor is at the start, 0 is the first one, which is glibc
   _task_tls_descriptor = guestload(cur_task_struct + 0x33c);
-  printf(" ?? GS RAW: %x\n", _task_tls_descriptor);
   _task_tls0_base = ((_task_tls_descriptor >> 16) & 0xffff) |
                     ((_task_tls_descriptor >> 16) & 0xff0000) |
                     ((_task_tls_descriptor >> 32) & 0xff000000);
-printf(" ?? GS: %x GSBASE: %x PROCESS GS: %x\n", GS, GSBASE, _task_tls0_base);
   thread_desc = guestload32(_task_tls0_base + 0x8);
-printf(" ?? thread desc: %x\n", thread_desc);
   ## gdb: OFFS pthread specific_1stblock => 0x6c
   ## gdb: p/x sizeof(struct pthread_key_data) => 0x8
   ## gdb: OFFS pthread_key_data data => 0x4
@@ -115,12 +112,9 @@ int PR_GetThreadPrivate(int index) {
   ## pthread key is 4 words after pt_book (+ 0x10)
   ## gdb: info addr pt_book => 0xb7d9c9000;
   pthread_key = guestload32(0xb7d9c900 + 0x10);
-printf(" :: pthread_key: %x\n", pthread_key);
   pr_thread = pthread_getspecific(pthread_key);
-printf(" :: pr_thread: %x\n", pr_thread);
   ## PRThread.privateData is the 10th word in => 0x24
   privateData = guestload32(pr_thread + 0x24);
-printf(" :: privateData: %x\n", privateData);
   return guestload32(privateData + index * 0x4);
 }
 
@@ -140,7 +134,6 @@ int nsTArray_last(int arr, int size) {
   length = guestload32(hdr);
   ## (mAutoBuf is at 0x4 and includes room for the header...)
   ## mHdr is 0x8 long because it has 2 32-bit ints
-printf(" array length: %d\n", length);
   return (hdr + 0x8 + (length - 1) * size);
 }
 
@@ -152,28 +145,23 @@ int _nsXPConnect_Peek_ret;
 int nsXPConnect_Peek() {
   ## gdb: info addr XPCPerThreadData::gTLSIndex => 0xb545f084
   tls_slot = guestload32(0xb545f084);
-  printf("tls_slot: %x\n", tls_slot);
   if (tls_slot == 0xffffffff) {
     _nsXPConnect_Peek_ret = 0;
   }
   else {
     per_thread_data = PR_GetThreadPrivate(tls_slot);
-printf("  per_thread_data: %x\n", per_thread_data);
 
     ## gdb: OFFS XPCPerThreadData mJSContextStack => 0x0
     js_context_stack = guestload32(per_thread_data);
-printf("  js_context_stack: %x\n", js_context_stack);
 
     ## gdb manual offset of mStack in XPCJSContextStack => 0x4
     ## p/x (unsigned)&XPCPerThreadData::sMainThreadData->mJSContextStack->mStack - (unsigned)XPCPerThreadData::sMainThreadData->mJSContextStack
     ## p sizeof(XPCJSContextInfo) => 12
     js_context_info = nsTArray_last(js_context_stack + 0x4, 12);
-printf("  js_context_info: %x\n", js_context_info);
 
     ## gdb: OFFS XPCJSContextInfo cx => 0
     _nsXPConnect_Peek_ret = guestload32(js_context_info);
   }
-printf("  peekret: %x\n", _nsXPConnect_Peek_ret);
   return _nsXPConnect_Peek_ret;
 }
 
