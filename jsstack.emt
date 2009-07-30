@@ -36,14 +36,9 @@ guestloadstr(string str, int addr)
 
 int _tssSP;
 
-## curthrptr --
-##   Return pointer to kernel thread-private data for the current process
-##   on the current VCPU. This might be either GSBASE or KERNELGSBASE;
-##   testing the CPL isn't *quite* right, because there's a short window
-##   immediately after the hardware syscall where the right value is still
-##   in KERNELGSBASE.
-int
-curthrptr()
+##
+int cur_task_struct;
+void get_cur_task_struct()
 {
   ## __per_cpu_start => 0xc07c7000
   ## per_cpu__init_tss => 0xc07cdf80
@@ -71,20 +66,20 @@ curthrptr()
 ##   }
 ##   return RSP & 0xfffff000;
   ## for my systems, it would appear we are not using 4k pages
-  return _tssSP & 0xffffe000;
+  cur_task_struct = guestload32(_tssSP & 0xffffe000);
 }
 
 string
 curprocname()
 {
-   guestloadstr(_procName, 0x318 + guestload32(curthrptr()));
-   return _procName;
+  guestloadstr(_procName, cur_task_struct + 0x318);
+  return _procName;
 }
 
 int
 curpid()
 {
-   return guestload32(0x1f0 + guestload32(curthrptr()));
+  return guestload32(cur_task_struct + 0x1f0);
 }
 
 ######################## actual jsstack.emt logic
@@ -93,25 +88,47 @@ curpid()
 ## // GS points at the current thread's pthread struct.  THREAD_SELF is at
 ## // pointed at by header.self in the struct which is the 3rd pointer in (0x8)
 int thread_desc;
+int _task_tls0_descriptor;
+int _task_tls0_base;
 int pthread_getspecific(int key) {
-  thread_desc = guestload32(GS + 0x8);
+  ## ugh, load the GS register out of the thread_struct
+  ## thread_struct offset is 0x33c
+  ## tls descriptor is at the start, 0 is the first one, which is glibc
+  _task_tls_descriptor = guestload(cur_task_struct + 0x33c);
+  printf(" ?? GS RAW: %x\n", _task_tls_descriptor);
+  _task_tls0_base = ((_task_tls_descriptor >> 16) & 0xffff) |
+                    ((_task_tls_descriptor >> 16) & 0xff0000) |
+                    ((_task_tls_descriptor >> 32) & 0xff000000);
+printf(" ?? GS: %x GSBASE: %x PROCESS GS: %x\n", GS, GSBASE, _task_tls0_base);
+  thread_desc = guestload32(_task_tls0_base + 0x8);
+printf(" ?? thread desc: %x\n", thread_desc);
   ## gdb: OFFS pthread specific_1stblock => 0x6c
   ## gdb: p/x sizeof(struct pthread_key_data) => 0x8
   ## gdb: OFFS pthread_key_data data => 0x4
-  return guestload32(thread_desc + 0x6c + 0x8 * key + 0x4);
+  return guestload32(thread_desc + 0x6c + (0x8 * key) + 0x4);
 }
 
 int pthread_key;
 int pr_thread;
 int privateData;
 int PR_GetThreadPrivate(int index) {
-  ## pthread key is 4 words after pt_book
-  ## gdb: info addr pt_book => 0xb7ca7900
-  pthread_key = guestload32(0xb7ca7910);
+  ## pthread key is 4 words after pt_book (+ 0x10)
+  ## gdb: info addr pt_book => 0xb7d9c9000;
+  pthread_key = guestload32(0xb7d9c900 + 0x10);
+printf(" :: pthread_key: %x\n", pthread_key);
   pr_thread = pthread_getspecific(pthread_key);
+printf(" :: pr_thread: %x\n", pr_thread);
   ## PRThread.privateData is the 10th word in => 0x24
   privateData = guestload32(pr_thread + 0x24);
+printf(" :: privateData: %x\n", privateData);
   return guestload32(privateData + index * 0x4);
+}
+
+void helpdump(int addr) {
+  printf("%x\n", guestload(addr));
+  printf("%x\n", guestload(addr + 8));
+  printf("%x\n", guestload(addr + 16));
+  printf("%x\n", guestload(addr + 24));
 }
 
 int hdr;
@@ -119,12 +136,12 @@ int length;
 int nsTArray_last(int arr, int size) {
   ## mHdr is at 0x0 inside the stack
   hdr = guestload32(arr);
+  ## mLength is at 0x0 inside the header (which is at 0x0)
   length = guestload32(hdr);
   ## (mAutoBuf is at 0x4 and includes room for the header...)
-
-  ## mLength is at 0x0 inside the header (which is at 0x0)
   ## mHdr is 0x8 long because it has 2 32-bit ints
-  return guestload32(hdr + 0x8 + (length - 1) * size);
+printf(" array length: %d\n", length);
+  return (hdr + 0x8 + (length - 1) * size);
 }
 
 int tls_slot;
@@ -133,43 +150,97 @@ int js_context_stack;
 int js_context_info;
 int _nsXPConnect_Peek_ret;
 int nsXPConnect_Peek() {
-  ## gdb: info addr XPCPerThreadData::gTLSIndex => 0xb536b084
-  tls_slot = guestload32(0xb536b084);
+  ## gdb: info addr XPCPerThreadData::gTLSIndex => 0xb545f084
+  tls_slot = guestload32(0xb545f084);
+  printf("tls_slot: %x\n", tls_slot);
   if (tls_slot == 0xffffffff) {
     _nsXPConnect_Peek_ret = 0;
   }
   else {
     per_thread_data = PR_GetThreadPrivate(tls_slot);
+printf("  per_thread_data: %x\n", per_thread_data);
 
     ## gdb: OFFS XPCPerThreadData mJSContextStack => 0x0
     js_context_stack = guestload32(per_thread_data);
+printf("  js_context_stack: %x\n", js_context_stack);
 
     ## gdb manual offset of mStack in XPCJSContextStack => 0x4
     ## p/x (unsigned)&XPCPerThreadData::sMainThreadData->mJSContextStack->mStack - (unsigned)XPCPerThreadData::sMainThreadData->mJSContextStack
     ## p sizeof(XPCJSContextInfo) => 12
     js_context_info = nsTArray_last(js_context_stack + 0x4, 12);
+printf("  js_context_info: %x\n", js_context_info);
 
     ## gdb: OFFS XPCJSContextInfo cx => 0
     _nsXPConnect_Peek_ret = guestload32(js_context_info);
   }
-
+printf("  peekret: %x\n", _nsXPConnect_Peek_ret);
   return _nsXPConnect_Peek_ret;
 }
 
+int chardata;
+void getunistr(int lenleft, int str, string value) {
+  chardata = guestload(chars);
+  if (lenleft >= 4) {
+    sprintf(value, "%s%c%c%c%c", value, chardata & 0xff, (chardata >> 16) & 0xff,
+            (chardata >> 32) & 0xff, (chardata >> 48) && 0xff);
+    if (lenleft > 4) {
+      getunistr(lenleft - 4, str + 8, value);
+    }
+  }
+  if (lenleft == 3) {
+    sprintf(value, "%s%c%c%c", value, chardata & 0xff, (chardata >> 16) & 0xff,
+            (chardata >> 32) & 0xff);
+  }
+  if (lenleft == 2) {
+    sprintf(value, "%s%c%c", value, chardata & 0xff, (chardata >> 16) & 0xff);
+  }
+  if (lenleft == 1) {
+    sprintf(value, "%s%c", value, chardata & 0xff);
+  }
+}
+
+int chars;
+void js_flat_string(int str, string value) {
+  length = guestload32(str) & 0xff;
+  chars = guestload32(str + 4);
+  sprintf(value, "");
+  getunistr(length, chars, value);
+}
+
+void js_atom_value(int atom, string value) {
+  if (atom) {
+    js_flat_string(atom & 0xfffffff8, value);
+  }
+  else {
+    sprintf(value, "<none>");
+  }
+}
+
+void js_function_name(int func, string name) {
+  ## gdb: OFFS JSFunction atom => 0x34
+  return js_atom_value(guestload32(func + 0x34), name);
+}
+
+int script;
 string filename;
+string funcname;
 int lineno;
 int down;
 void dump_js_frame(int fp) {
   ## -- script info
   ## gdb: OFFS JSStackFrame script => 0x1c
+  script = guestload32(fp + 0x1c);
   ## gdb: OFFS JSScript filename => 0x20
-  guestloadstr(filename, guestload32(fp + 0x20));
+  guestloadstr(filename, guestload32(script + 0x20));
   ## gdb: OFFS JSScript lineno => 0x24
-  lineno = guestload32(fp + 0x24);
+  lineno = guestload32(script + 0x24);
+
+  ## gdb: OFFS JSStackFrame fun => 0x20
+  js_function_name(fp + 0x20, funcname);
 
   ## gdb: OFFS JSStackFrame regs => 0x0
   ## gdb: OFFS JSFrameRegs pc => 0x0
-  printf(" %s:%d\n", filename, lineno);
+  printf(" %s:%s:%d\n", filename, funcname, lineno);
 
   ## gdb: OFFS JSStackFrame down => 0x34
   down = guestload32(fp + 0x34);
@@ -188,8 +259,13 @@ void dump_js_stack() {
   }
 }
 
+int now;
 USEC:100000 {
+  get_cur_task_struct();
   if (!strcmp(curprocname(), "thunderbird-bin")) {
+    ## xtime => 0xc0823a00
+    now = guestload(0xc0823a00);
+    printf("*** TIME: %x\n", now);
     dump_js_stack();
   }
 }
