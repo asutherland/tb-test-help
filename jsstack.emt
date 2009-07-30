@@ -178,13 +178,13 @@ printf("  peekret: %x\n", _nsXPConnect_Peek_ret);
 }
 
 int chardata;
-void getunistr(int lenleft, int str, string value) {
+void getunistr(int lenleft, int chars, string value) {
   chardata = guestload(chars);
   if (lenleft >= 4) {
     sprintf(value, "%s%c%c%c%c", value, chardata & 0xff, (chardata >> 16) & 0xff,
-            (chardata >> 32) & 0xff, (chardata >> 48) && 0xff);
+            (chardata >> 32) & 0xff, (chardata >> 48) & 0xff);
     if (lenleft > 4) {
-      getunistr(lenleft - 4, str + 8, value);
+      getunistr(lenleft - 4, chars + 8, value);
     }
   }
   if (lenleft == 3) {
@@ -199,12 +199,9 @@ void getunistr(int lenleft, int str, string value) {
   }
 }
 
-int chars;
 void js_flat_string(int str, string value) {
-  length = guestload32(str) & 0xff;
-  chars = guestload32(str + 4);
   sprintf(value, "");
-  getunistr(length, chars, value);
+  getunistr(guestload32(str) & 0xff, guestload32(str + 4), value);
 }
 
 void js_atom_value(int atom, string value) {
@@ -236,7 +233,7 @@ void dump_js_frame(int fp) {
   lineno = guestload32(script + 0x24);
 
   ## gdb: OFFS JSStackFrame fun => 0x20
-  js_function_name(fp + 0x20, funcname);
+  js_function_name(guestload32(fp + 0x20), funcname);
 
   ## gdb: OFFS JSStackFrame regs => 0x0
   ## gdb: OFFS JSFrameRegs pc => 0x0
