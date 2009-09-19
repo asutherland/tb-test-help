@@ -245,7 +245,7 @@ void dump_js_stack() {
 }
 
 int now;
-USEC:100000 {
+USEC:1000 {
   get_cur_task_struct();
   if (!strcmp(curprocname(), "thunderbird-bin")) {
     ## xtime => 0xc0823a00
