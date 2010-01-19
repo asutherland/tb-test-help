@@ -52,8 +52,11 @@ def parse_line(line):
         blah, blah, blah, rest = rest.split(None, 3)
     else:
         filename_line, rest = rest.split(None, 1)
-        assert ":" in filename_line
-        filename, line = filename_line.split(":")
+        if ":" in filename_line:
+            filename, line = filename_line.split(":")
+        else:
+            filename = filename_line
+            line = "0"
     object, rest = rest.split(None, 1)
     symbol = rest.strip()
     return (count, filename, line, object, symbol)
