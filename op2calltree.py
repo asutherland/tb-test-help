@@ -6,6 +6,8 @@
 # (In fact I am not entirely sure that this works correctly, be careful
 # out there.)
 
+# This is from http://roberts.vorpus.org/~njs/op2calltree.py
+
 # Feed this file opreport -gcf on stdin, and it will spit out
 # calltree on stdout.
 #
