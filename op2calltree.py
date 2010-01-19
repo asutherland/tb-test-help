@@ -44,7 +44,7 @@ def convert(op, ct):
 # some sample lines:
 # 601802    9.9042  botan/sha160.cpp:54         /home/njs/src/monotone/vlogs-test/mtn-client _ZN5Botan7SHA_1604hashEPKh
 # 1585865  26.0995  (no location information)   /usr/lib/libstdc++.so.6.0.7 (no symbols)
-# we return the tuple: (count, filename, line, object, symbol)
+# we return the tuple: (count, filename, line, objfile, symbol)
 def parse_line(line):
     rest = line.strip()
     count, percent, rest = rest.split(None, 2)
@@ -59,9 +59,9 @@ def parse_line(line):
         else:
             filename = filename_line
             line = "0"
-    object, rest = rest.split(None, 1)
+    objfile, rest = rest.split(None, 1)
     symbol = rest.strip()
-    return (count, filename, line, object, symbol)
+    return (count, filename, line, objfile, symbol)
 
 def process_stanza(stanza, ct):
     ct.write("\n")
@@ -72,9 +72,9 @@ def process_stanza(stanza, ct):
         if line[0] not in "0123456789":
             continue
         # process the direct cost line
-        count, filename, line, object, symbol = parse_line(line)
+        count, filename, line, objfile, symbol = parse_line(line)
         ct.write("fl=%s\n" % filename)
-        ct.write("ob=%s\n" % object)
+        ct.write("ob=%s\n" % objfile)
         ct.write("fn=%s\n" % symbol)
         ct.write("%s %s\n" % (line, count))
         # save for later
@@ -85,9 +85,9 @@ def process_stanza(stanza, ct):
     for line in it:
         if "[self]" in line:
             continue
-        count, filename, line, object, symbol = parse_line(line)
+        count, filename, line, objfile, symbol = parse_line(line)
         ct.write("cfi=%s\n" % filename)
-        ct.write("cob=%s\n" % object)
+        ct.write("cob=%s\n" % objfile)
         ct.write("cfn=%s\n" % symbol)
         # we don't know how many calls were made, so just hard-code to "1"
         # and we don't know the line number the calls were made from, so just
