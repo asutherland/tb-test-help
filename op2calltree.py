@@ -74,7 +74,7 @@ def process_stanza(stanza, ct):
         # process the direct cost line
         count, filename, line, objfile, symbol = parse_line(line)
         ct.write("fl=%s\n" % filename)
-        ct.write("ob=%s\n" % objfile)
+        ct.write("ob=%s\n" % filename) # was objfile but that is inconsistent
         ct.write("fn=%s\n" % symbol)
         ct.write("%s %s\n" % (line, count))
         # save for later
@@ -87,7 +87,7 @@ def process_stanza(stanza, ct):
             continue
         count, filename, line, objfile, symbol = parse_line(line)
         ct.write("cfi=%s\n" % filename)
-        ct.write("cob=%s\n" % objfile)
+        ct.write("cob=%s\n" % filename) # was objfile but that is inconsistent
         ct.write("cfn=%s\n" % symbol)
         # we don't know how many calls were made, so just hard-code to "1"
         # and we don't know the line number the calls were made from, so just
