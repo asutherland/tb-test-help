@@ -194,9 +194,15 @@ class ProcInfo(object):
 
 
 def main(pid):
+    normal_hex_re = re.compile("0x[0-9a-f]+")
     addr_hex_re = re.compile(':!([a-z]{2,2})(?:,(\d+))?:([0-9a-f]+)')
     
     proc = ProcInfo(pid)
+
+    def normal_replacer(match):
+        hexaddr = match.group(0)
+        symname, overshoot = proc.translateAddress(int(hexaddr, 16))
+        return symname or hexaddr
 
     def replacer(match):
         command = match.group(1)
@@ -219,7 +225,9 @@ def main(pid):
 
     while not sys.stdin.closed:
         line = sys.stdin.readline()
-        sys.stdout.write(addr_hex_re.sub(replacer, line))
+        line = addr_hex_re.sub(replacer, line)
+        line = normal_hex_re.sub(normal_replacer, line)
+        sys.stdout.write(line)
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:

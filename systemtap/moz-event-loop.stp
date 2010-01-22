@@ -1,6 +1,8 @@
 
 global evented;
 
+// We need to use a line-specific statement because event is never a member
+//  variable.
 probe process("/home/visbrero/rev_control/hg/comm-1.9.2/obj-thunderbird-debug/mozilla/dist/lib/libxpcom_core.so").statement("nsThread::ProcessNextEvent@nsThread.cpp:527") {
   // $event->mRawPtr's value is the address of an instance on the heap
   // The first pointer at that location is the pointer to the vtable.
@@ -8,23 +10,36 @@ probe process("/home/visbrero/rev_control/hg/comm-1.9.2/obj-thunderbird-debug/mo
   evented[eventAddr]++;
 }
 
-/*
-probe process("/home/visbrero/rev_control/hg/comm-1.9.2/obj-thunderbird-debug/mozilla/dist/lib/libxpcom_core.so").statement("nsRunnable::Run@nsThreadUtils") {
-  eventAddr = @cast($event->mRawPtr, "be_a_ptr", "<be_a_ptr.h>")[0];
-  if (!evented[eventAddr])
-    namey[eventAddr] = usymname(eventAddr);
-  evented[eventAddr]++;
+global timered;
+
+probe process("/home/visbrero/rev_control/hg/comm-1.9.2/obj-thunderbird-debug/mozilla/dist/lib/libxpcom_core.so").statement("nsTimerImpl::Fire@nsTimerImpl.cpp:419") {
+//printf("!!this: 0x%x callback type: %d\n", $this, $callbackType);
+//printf("  callback: 0x%x  callback via this: 0x%x\n", $callback->c, $this->mCallback->c);
+  // function?
+  if ($callbackType == 2) {
+    timerAddr = $callback->c;
+//printf("  closure: 0x%x alt closure: 0x%x\n", $this->mClosure,
+//          @cast(&$this->mClosure, "be_a_ptr", "<be_a_ptr.h>"));
+}   
+  else
+    timerAddr = @cast(&$callback, "be_a_pptr", "<be_a_ptr.h>")[0];
+//printf("  timerAddr: 0x%x\n", timerAddr);
+  timered[timerAddr]++;
 }
-*/
 
 // nsProxyObjectCallInfo::Run
 
 /* ==== Reporting ==== */
 probe timer.s(2) {
-  printf("---------\n");
+  printf("====================\n----- Event Loop:\n");
   foreach (eventAddr in evented-) {
-    printf(":!vt,39:%x %d\n", eventAddr, evented[eventAddr]);
+    printf(":!vt,59:%x %d\n", eventAddr, evented[eventAddr]);
   }
-
   delete evented;
+
+  printf("----- Timers:\n");
+  foreach (timerAddr in timered-) {
+    printf(":!vt,59:%x %d\n", timerAddr, timered[timerAddr]);
+  }
+  delete timered;
 }
