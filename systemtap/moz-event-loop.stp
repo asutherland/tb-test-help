@@ -1,0 +1,30 @@
+
+global evented;
+
+probe process("/home/visbrero/rev_control/hg/comm-1.9.2/obj-thunderbird-debug/mozilla/dist/lib/libxpcom_core.so").statement("nsThread::ProcessNextEvent@nsThread.cpp:527") {
+  // $event->mRawPtr's value is the address of an instance on the heap
+  // The first pointer at that location is the pointer to the vtable.
+  eventAddr = @cast(&$event, "be_a_pptr", "<be_a_ptr.h>")[0];
+  evented[eventAddr]++;
+}
+
+/*
+probe process("/home/visbrero/rev_control/hg/comm-1.9.2/obj-thunderbird-debug/mozilla/dist/lib/libxpcom_core.so").statement("nsRunnable::Run@nsThreadUtils") {
+  eventAddr = @cast($event->mRawPtr, "be_a_ptr", "<be_a_ptr.h>")[0];
+  if (!evented[eventAddr])
+    namey[eventAddr] = usymname(eventAddr);
+  evented[eventAddr]++;
+}
+*/
+
+// nsProxyObjectCallInfo::Run
+
+/* ==== Reporting ==== */
+probe timer.s(2) {
+  printf("---------\n");
+  foreach (eventAddr in evented-) {
+    printf(":!vt,39:%x %d\n", eventAddr, evented[eventAddr]);
+  }
+
+  delete evented;
+}
