@@ -1,45 +1,110 @@
 
-global evented;
+////////////////////////////////////////////////////////////////////////////////
+//// Event Loop Duration Stuff
 
+global event_thread_depth;
+global event_entry_times;
+global event_addresses;
+
+global event_duration;
+global event_count;
+
+//!! Wrap-before
+probe process("/home/visbrero/rev_control/hg/comm-1.9.2/obj-thunderbird-debug/mozilla/dist/lib/libxpcom_core.so").statement("nsThread::ProcessNextEvent@nsThread.cpp:520") {
+  ctx = tid();
+  depth = event_thread_depth[ctx]++;
+  event_addresses[ctx, depth] = 0;
+}
+
+//!! Execution
 // We need to use a line-specific statement because event is never a member
 //  variable.
 probe process("/home/visbrero/rev_control/hg/comm-1.9.2/obj-thunderbird-debug/mozilla/dist/lib/libxpcom_core.so").statement("nsThread::ProcessNextEvent@nsThread.cpp:527") {
   // $event->mRawPtr's value is the address of an instance on the heap
   // The first pointer at that location is the pointer to the vtable.
   eventAddr = @cast(&$event, "be_a_pptr", "<be_a_ptr.h>")[0];
-  evented[eventAddr]++;
+
+  ctx = tid();
+  depth = event_thread_depth[ctx] - 1;
+  time = gettimeofday_us();
+  event_entry_times[ctx, depth] = time;
+  event_addresses[ctx, depth] = eventAddr;
 }
 
-global timered;
+//!! Wrap-after as exit
+probe process("/home/visbrero/rev_control/hg/comm-1.9.2/obj-thunderbird-debug/mozilla/dist/lib/libxpcom_core.so").statement("nsThread::ProcessNextEvent@nsThread.cpp:535") {
+  ctx = tid();
+  depth = --event_thread_depth[ctx];
+  eventAddr = event_addresses[ctx, depth];
 
-probe process("/home/visbrero/rev_control/hg/comm-1.9.2/obj-thunderbird-debug/mozilla/dist/lib/libxpcom_core.so").statement("nsTimerImpl::Fire@nsTimerImpl.cpp:419") {
-//printf("!!this: 0x%x callback type: %d\n", $this, $callbackType);
-//printf("  callback: 0x%x  callback via this: 0x%x\n", $callback->c, $this->mCallback->c);
-  // function?
-  if ($callbackType == 2) {
+  if (eventAddr) {
+    time = gettimeofday_us();
+    runtime = time - event_entry_times[ctx, depth];
+
+    event_duration[eventAddr] += runtime;
+    event_count[eventAddr]++;
+  }
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+//// Timer Duration Stuff
+
+global timer_duration;
+global timer_count;
+
+global timer_entry_times;
+global timer_thread_depth;
+
+global timer_addresses;
+
+//!! Entry
+probe process("/home/visbrero/rev_control/hg/comm-1.9.2/obj-thunderbird-debug/mozilla/dist/lib/libxpcom_core.so").statement("nsTimerImpl::Fire@nsTimerImpl.cpp:419")
+{
+  if ($callbackType == 2)
     timerAddr = $callback->c;
-//printf("  closure: 0x%x alt closure: 0x%x\n", $this->mClosure,
-//          @cast(&$this->mClosure, "be_a_ptr", "<be_a_ptr.h>"));
-}   
   else
     timerAddr = @cast(&$callback, "be_a_pptr", "<be_a_ptr.h>")[0];
-//printf("  timerAddr: 0x%x\n", timerAddr);
-  timered[timerAddr]++;
+
+  ctx = tid();
+  depth = timer_thread_depth[ctx]++;
+  time = gettimeofday_us();
+  timer_entry_times[ctx, depth] = time;
+  timer_addresses[ctx, depth] = timerAddr;
+}
+
+//!! Exit
+probe process("/home/visbrero/rev_control/hg/comm-1.9.2/obj-thunderbird-debug/mozilla/dist/lib/libxpcom_core.so").statement("nsTimerImpl::Fire@nsTimerImpl.cpp:454")
+{
+  ctx = tid();
+  depth = --timer_thread_depth[ctx];
+  time = gettimeofday_us();
+
+  runtime = time - timer_entry_times[ctx, depth];
+
+  timerAddr = timer_addresses[ctx, depth];
+  
+  timer_duration[timerAddr] += runtime;
+  timer_count[timerAddr]++;
 }
 
 // nsProxyObjectCallInfo::Run
 
 /* ==== Reporting ==== */
-probe timer.s(2) {
-  printf("====================\n----- Event Loop:\n");
-  foreach (eventAddr in evented-) {
-    printf(":!vt,59:%x %d\n", eventAddr, evented[eventAddr]);
+probe timer.s(10) {
+  printf("\n====================                                             ms    #\n----- Event Loop:\n");
+  foreach (eventAddr in event_duration-) {
+    printf("  :!vt,59:%x %5d %4d\n", eventAddr,
+           event_duration[eventAddr] / 1000, event_count[eventAddr]);
   }
-  delete evented;
+  delete event_duration;
+  delete event_count;
 
   printf("----- Timers:\n");
-  foreach (timerAddr in timered-) {
-    printf(":!vt,59:%x %d\n", timerAddr, timered[timerAddr]);
+  foreach (timerAddr in timer_duration-) {
+    printf("  :!vt,59:%x %5d %4d\n", timerAddr,
+           timer_duration[timerAddr] / 1000, timer_count[timerAddr]);
   }
-  delete timered;
+  delete timer_duration;
+  delete timer_count;
 }
