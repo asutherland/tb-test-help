@@ -26,11 +26,18 @@
 ////////////////////////////////////////////////////////////////////////////////
 //// Event Loop Duration Stuff
 
+// maps thread id to current depth.
 global event_thread_depth;
+// maps [thread id, depth] to the time execution started.
 global event_entry_times;
+// maps [thread id, depth] to the address of the callback; initially 0 per
+//  our wrap-before case, allowing the exit handler to distinguish the case
+//  where execution never actually occurred.
 global event_addresses;
 
+// maps callback address to total time spent in there in usec
 global event_duration;
+// maps callback address to the total number of times invoked
 global event_count;
 
 //!! Wrap-before
@@ -44,9 +51,14 @@ probe process(@1).statement("nsThread::ProcessNextEvent@nsThread.cpp:520") {
 // We need to use a line-specific statement because event is never a member
 //  variable.
 probe process(@1).statement("nsThread::ProcessNextEvent@nsThread.cpp:527") {
+    
+
   // $event->mRawPtr's value is the address of an instance on the heap
   // The first pointer at that location is the pointer to the vtable.
-  eventAddr = @cast(&$event, "be_a_pptr", "<be_a_ptr.h>")[0];
+  if ($event->mRawPtr)
+    eventAddr = @cast(&$event, "be_a_pptr", "<be_a_ptr.h>")[0];
+  else
+    eventAddr = 0;
 
   ctx = tid();
   depth = event_thread_depth[ctx] - 1;
@@ -74,12 +86,20 @@ probe process(@1).statement("nsThread::ProcessNextEvent@nsThread.cpp:535") {
 ////////////////////////////////////////////////////////////////////////////////
 //// Timer Duration Stuff
 
+// maps callback address to the total usec spent in the callback
 global timer_duration;
+// maps callback address to the number of times invoked
 global timer_count;
 
+// maps [thread id, depth] to entry time in usec
 global timer_entry_times;
+// maps thread id to current call stack depth per us
 global timer_thread_depth;
 
+// maps [thread id, depth] to the current callback address, used to pass the
+//  information from entry which knows it to exit which does notbut is the only
+//  one who can figure out when the call is over (easily).  not enough reliable
+//  source lines to hook onto to avoid this.
 global timer_addresses;
 
 //!! Entry
@@ -112,23 +132,223 @@ probe process(@1).statement("nsTimerImpl::Fire@nsTimerImpl.cpp:454")
   timer_count[timerAddr]++;
 }
 
-// nsProxyObjectCallInfo::Run
 
-/* ==== Reporting ==== */
+////////////////////////////////////////////////////////////////////////////////
+//// nsInputStreamReadyEvent::Run
+
+// Notes: I am assuming reentrancy is impossible in this case which avoids the
+//  need for any kind of depth stack.  We do, however, need to parameterize
+//  based on the current thread.
+
+// maps current thread to current address
+global input_address;
+// maps current thread to start time
+global input_entry_time
+
+// maps callback address to the total usec spent in the callback
+global input_duration;
+// maps callback address to the number of times invoked
+global input_count;
+
+probe process(@1).function("nsInputStreamReadyEvent::Run")
+{
+  ctx = tid();
+
+  // $mCallback->mRawPtr's value is the address of an instance on the heap
+  // The first pointer at that location is the pointer to the vtable.
+  callbackAddr = @cast(&$this->mCallback, "be_a_pptr", "<be_a_ptr.h>")[0];
+
+  input_address[ctx] = callbackAddr;
+  input_entry_time[ctx] = gettimeofday_us();
+}
+
+probe process(@1).function("nsInputStreamReadyEvent::Run").return
+{
+  time = gettimeofday_us();
+  ctx = tid();
+  runtime = time - input_entry_time[ctx];
+
+  callbackAddr = input_address[ctx];
+  input_duration[callbackAddr] += runtime;
+  input_count[callbackAddr]++;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//// nsInputStreamPump::OnInputStreamReady
+
+// maps current thread to current address
+global pump_address;
+// maps current thread to start time
+global pump_entry_time
+
+// maps callback address to the total usec spent in the callback
+global pump_duration;
+// maps callback address to the number of times invoked
+global pump_count;
+
+// the prologue logic is not working on this dude, need to move to a statement
+//probe process(@2).function("nsInputStreamPump::OnInputStreamReady")
+probe process(@2).statement("nsInputStreamPump::OnInputStreamReady@nsInputStreamPump.cpp:381")
+{
+  ctx = tid();
+
+  rawPtr = $this->mListener->mRawPtr;
+  // $mCallback->mRawPtr's value is the address of an instance on the heap
+  // The first pointer at that location is the pointer to the vtable.
+  if (rawPtr)
+    callbackAddr = @cast(rawPtr, "be_a_pptr", "<be_a_ptr.h>")[0];
+  else
+    callbackAddr = 0;
+
+  pump_address[ctx] = callbackAddr;
+  pump_entry_time[ctx] = gettimeofday_us();
+}
+
+probe process(@2).function("nsInputStreamPump::OnInputStreamReady").return
+{
+  time = gettimeofday_us();
+  ctx = tid();
+  runtime = time - pump_entry_time[ctx];
+
+  callbackAddr = pump_address[ctx];
+  pump_duration[callbackAddr] += runtime;
+  pump_count[callbackAddr]++;
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////
+//// nsProxyObjectCallInfo::Run
+
+// Notes: I am assuming reentrancy is impossible in this case which avoids the
+//  need for any kind of depth stack.  We do, however, need to parameterize
+//  based on the current thread.
+
+// maps current thread to current address
+global proxy_address;
+// maps current thread to start time
+global proxy_entry_time
+
+// maps callback address to the total usec spent in the callback
+global proxy_duration;
+// maps callback address to the number of times invoked
+global proxy_count;
+
+// the prologue logic is not working on this dude, need to move to a statement
+//probe process(@1).function("nsProxyObjectCallInfo::Run")
+probe process(@1).statement("nsProxyObjectCallInfo::Run@nsProxyEvent.cpp:176")
+{
+  ctx = tid();
+
+  rawPtr = $this->mOwner->mRawPtr->mProxyObject->mRawPtr->mRealObject->mRawPtr;
+  // $mCallback->mRawPtr's value is the address of an instance on the heap
+  // The first pointer at that location is the pointer to the vtable.
+  callbackAddr = @cast(rawPtr, "be_a_pptr", "<be_a_ptr.h>")[0];
+
+  proxy_address[ctx] = callbackAddr;
+  proxy_entry_time[ctx] = gettimeofday_us();
+}
+
+probe process(@1).function("nsProxyObjectCallInfo::Run").return
+{
+  time = gettimeofday_us();
+  ctx = tid();
+  runtime = time - proxy_entry_time[ctx];
+
+  callbackAddr = proxy_address[ctx];
+  proxy_duration[callbackAddr] += runtime;
+  proxy_count[callbackAddr]++;
+}
+
+
+
+////////////////////////////////////////////////////////////////////////////////
+//// Reporting
+
 probe timer.s(10) {
-  printf("\n====================                                             ms    #\n----- Event Loop:\n");
+  printf("====================                                             ms    #\n");
+  header = 0;
+  anyHeader = 0;
   foreach (eventAddr in event_duration-) {
-    printf("  :!vt,59:%x %5d %4d\n", eventAddr,
-           event_duration[eventAddr] / 1000, event_count[eventAddr]);
+    dur_ms = event_duration[eventAddr] / 1000;
+    if (dur_ms < 100)
+      break;
+    if (!header) {
+      printf("----- Event Loop:\n");
+      header = 1;
+      anyHeader = 1;
+    }
+    printf("  :!vt,59:%x %5d %4d\n", eventAddr, dur_ms,
+           event_count[eventAddr]);
   }
   delete event_duration;
   delete event_count;
 
-  printf("----- Timers:\n");
+  header = 0;
   foreach (timerAddr in timer_duration-) {
-    printf("  :!vt,59:%x %5d %4d\n", timerAddr,
-           timer_duration[timerAddr] / 1000, timer_count[timerAddr]);
+    dur_ms = timer_duration[timerAddr] / 1000;
+    if (dur_ms < 100)
+      break;
+    if (!header) {
+      printf("----- Timers:\n");
+      header = 1;
+      anyHeader = 1;
+    }
+    printf("  :!vt,59:%x %5d %4d\n", timerAddr, dur_ms,
+           timer_count[timerAddr]);
   }
   delete timer_duration;
   delete timer_count;
+
+  header = 0;
+  foreach (inputAddr in input_duration-) {
+    dur_ms = input_duration[inputAddr] / 1000;
+    if (dur_ms < 100)
+      break;
+    if (!header) {
+      printf("----- Input Events:\n");
+      header = 1;
+      anyHeader = 1;
+    }
+    printf("  :!vt,59:%x %5d %4d\n", inputAddr, dur_ms,
+           input_count[inputAddr]);
+  }
+  delete input_duration;
+  delete input_count;
+
+  header = 0;
+  foreach (pumpAddr in pump_duration-) {
+    dur_ms = pump_duration[pumpAddr] / 1000;
+    if (dur_ms < 100)
+      break;
+    if (!header) {
+      printf("----- Pump Events:\n");
+      header = 1;
+      anyHeader = 1;
+    }
+    printf("  :!vt,59:%x %5d %4d\n", pumpAddr, dur_ms,
+           pump_count[pumpAddr]);
+  }
+  delete pump_duration;
+  delete pump_count;
+
+  header = 0;
+  foreach (proxyAddr in proxy_duration-) {
+    dur_ms = proxy_duration[proxyAddr] / 1000;
+    if (dur_ms < 100)
+      break;
+    if (!header) {
+      printf("----- Proxy Events:\n");
+      header = 1;
+      anyHeader = 1;
+    }
+    printf("  :!vt,59:%x %5d %4d\n", proxyAddr, dur_ms,
+           proxy_count[proxyAddr]);
+  }
+  delete proxy_duration;
+  delete proxy_count;
+
+
+  if (anyHeader)
+    printf("\n");
 }
