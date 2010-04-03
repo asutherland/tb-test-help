@@ -1,0 +1,109 @@
+
+
+// maps thread id to the active Vdbe, if any.
+global thread_active_vdbe;
+global active_sql;
+
+////////////////////////////////////////////////////////////////////////////////
+//// sqlite3Step logix
+
+// Vdbe->zSql
+probe process(@1).function("sqlite3Step") {
+  ctx = tid();
+  curVdbe = thread_active_vdbe[ctx];
+
+  if (curVdbe != $p) {
+    if (curVdbe)
+      flushOpcodes(ctx);
+    thread_active_vdbe[ctx] = $p;
+    active_sql[ctx] = $p->zSql;
+  }
+}
+
+probe process(@1).function("sqlite3VdbeReset") {
+  ctx = tid();
+  curVdbe = thread_active_vdbe[ctx];
+  if (curVdbe) {
+    flushOpcodes(ctx);
+    thread_active_vdbe[ctx] = 0;
+  }
+  //printf("Done with %s\n", user_string($p->zSql));
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//// sqlite3VdbeExec logix
+
+global opcode_counts;
+
+// SQLITE_PRIVATE int sqlite3VdbeExec
+// (starts at line 50888 for current)
+
+// Relevant locals:
+//  Vdbe *p
+//  int pc;
+//  sqlite3 *db;
+//  Op *pOp
+
+// -- effective function entry
+// "db->busyHandler.nBusy = 0;"
+/*
+probe process(@1).statement("sqlite3VdbeExec@sqlite3.c:51324") {
+}
+*/
+
+// -- top of the loop for each opcode case
+// "opProperty = opcodeProperty[pOp->opcode];"
+probe process(@1).statement("sqlite3VdbeExec@sqlite3.c:51413") {
+  //ctx = tid();
+  opcode_counts[$pc]++;
+}
+
+/*
+// -- bottom of the loop for each opcode case (iff debug)
+// "assert( pc>=-1 && pc<p->nOp );"
+probe process(@1).statement("sqlite3VdbeExec@sqlite3.c:56364") {
+  ctx = tid();
+}
+
+// -- return case
+// "vdbe_return:" + 1
+probe process(@1).statement("sqlite3VdbeExec@sqlite3.c:56394") {
+
+}
+*/
+
+global ever;
+
+probe begin {
+  printf("{\"stats\": [\n");
+  ever = 0;
+}
+
+function flushOpcodes(ctx) {
+  if (ever)
+    printf(",");
+  ever = 1;
+  printf("{\"sql\": \"%s\",\n \"counts\": [", user_string(active_sql[ctx]));
+  npc = 0;
+  foreach (pc+ in opcode_counts) {
+    // fill gaps with zeroes.
+    while (npc < pc) {
+      if (npc)
+        printf(",0");
+      else
+        printf("0");
+      npc++;
+    }
+    if (pc)
+      printf(",%d", opcode_counts[pc]);
+    else
+      printf("%d", opcode_counts[pc]);
+    npc++;
+  }
+  printf("]}\n");
+  delete opcode_counts;
+}
+
+probe end {
+  printf("]}");
+}
