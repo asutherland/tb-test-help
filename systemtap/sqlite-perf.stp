@@ -1,8 +1,51 @@
-
+/*
+ * Systemtap script to dump a JSON blob that looks like so:
+ * {
+ *   "stats": [
+ *     {"sql": "SQL STRING, possibly <unknown>",
+ *      "counts": [1,1,1,5,5,2,1],
+ *      "pages": [0,0,1,4]},
+ *      ...
+ *    ]
+ *  }
+ *
+ * where "counts" is the number of times each opcode was executed and "pages"
+ * is the number of btree pages that were requested including both cache hits
+ * and misses.
+ *
+ * This file uses utrace probes, especially statement probes.  As such, it is
+ * currently specialized to SQLite 3.6.22's amalgamation where there is a giant
+ * sqlite3.c with all the source code inside.  At some point I will probably
+ * adapt this file to use some kind of preprocessing to fix up the offsets.
+ * (Or maybe systemtap will deal with this?  The systemtap list includes patches
+ * to the kernel "perf" tool which is capable of using regular expressions to
+ * automatically do that kind of thing.)
+ *
+ * For this script and my downstream scripts to do the right thing, you need
+ * to be running a DEBUG build.  In the mozilla tree, a DEBUG mozilla build
+ * nets you a DEBUG SQLite which works out well.  Strictly speaking, this
+ * file just needs !NDEBUG for correct operation though.
+ *
+ * COMPLICATIONS / DECISIONS
+ *
+ * Virtual tables are backed by one or more real underlying tables.  As a
+ * non-surprising result, use of the V* opcodes can result in nested calls
+ * to sqlite3_step and what not.  Since we currently don't care about the
+ * underlying implementation of those calls, we add guards that stop us from
+ * processing anything that happens in those contexts.
+ *
+ *
+ * Andrew Sutherland <asutherland@asutherland.org>
+ */
 
 // maps thread id to the active Vdbe, if any.
 global thread_active_vdbe;
+// maps thread id to the active Vdbe's zSql pointer.
 global active_sql;
+
+// maps thread id to our current sqlite3_step depth, used for avoiding getting
+// tricked by virtual table nested used of the infrastructure.
+global thread_sqlite3_step_depth;
 
 ////////////////////////////////////////////////////////////////////////////////
 //// sqlite3Step logix
@@ -10,6 +53,11 @@ global active_sql;
 // Vdbe->zSql
 probe process(@1).function("sqlite3Step") {
   ctx = tid();
+  depth = thread_sqlite3_step_depth[ctx]++;
+  // don't do anything more if we are nested
+  if (depth)
+    next;
+
   curVdbe = thread_active_vdbe[ctx];
 
   if (curVdbe != $p) {
@@ -20,8 +68,19 @@ probe process(@1).function("sqlite3Step") {
   }
 }
 
+probe process(@1).function("sqlite3Step").return {
+  ctx = tid();
+  --thread_sqlite3_step_depth[ctx];
+}
+
+
 probe process(@1).function("sqlite3VdbeReset") {
   ctx = tid();
+  depth = thread_sqlite3_step_depth[ctx];
+  // bail if nested (we should only be invoked from a depth of 0 to count)
+  if (depth)
+    next;
+
   curVdbe = thread_active_vdbe[ctx];
   if (curVdbe) {
     flushOpcodes(ctx);
@@ -31,9 +90,34 @@ probe process(@1).function("sqlite3VdbeReset") {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+//// btree page touching tracking
+
+// maps thread id to the count of pages touched since last clear
+global btree_pages_touched;
+
+//probe process(@1).statement("btreePageLookup@sqlite3.c:38160") {
+probe process(@1).function("btreePageLookup").return {
+  // Only count if we found a page, otherwise we're going to end up in
+  //  sqlite3BtreeGetPage (and we don't want to double count.)
+  page = $return;
+  if (page) {
+    ctx = tid();
+    btree_pages_touched[ctx]++;
+  }
+}
+
+probe process(@1).function("sqlite3BtreeGetPage") {
+  ctx = tid();
+  btree_pages_touched[ctx]++;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 //// sqlite3VdbeExec logix
 
+// save the pc from the entry part.  maps ctx -> pc
+global active_pc;
 global opcode_counts;
+global opcode_pages;
 
 // SQLITE_PRIVATE int sqlite3VdbeExec
 // (starts at line 50888 for current)
@@ -54,17 +138,35 @@ probe process(@1).statement("sqlite3VdbeExec@sqlite3.c:51324") {
 // -- top of the loop for each opcode case
 // "opProperty = opcodeProperty[pOp->opcode];"
 probe process(@1).statement("sqlite3VdbeExec@sqlite3.c:51413") {
-  //ctx = tid();
-  opcode_counts[$pc]++;
+  ctx = tid();
+  depth = thread_sqlite3_step_depth[ctx];
+  // bail if nested
+  if (depth > 1)
+    next;
+
+  pc = $pc;
+  active_pc[ctx] = pc;
+  opcode_counts[pc]++;
+  btree_pages_touched[ctx] = 0;
 }
 
-/*
-// -- bottom of the loop for each opcode case (iff debug)
+
+// -- bottom of the loop for each opcode case (iff debug or rather !NDEBUG)
 // "assert( pc>=-1 && pc<p->nOp );"
 probe process(@1).statement("sqlite3VdbeExec@sqlite3.c:56364") {
   ctx = tid();
+  depth = thread_sqlite3_step_depth[ctx];
+  // bail if nested
+  if (depth > 1)
+    next;
+
+  pc = active_pc[ctx];
+  if (pc > -1)
+    opcode_pages[pc] += btree_pages_touched[ctx];
+  active_pc[ctx] = -1;
 }
 
+/*
 // -- return case
 // "vdbe_return:" + 1
 probe process(@1).statement("sqlite3VdbeExec@sqlite3.c:56394") {
@@ -83,7 +185,9 @@ function flushOpcodes(ctx) {
   if (ever)
     printf(",");
   ever = 1;
+  // -- JSON obj, SQL bit, counts header
   printf("{\"sql\": \"%s\",\n \"counts\": [", user_string(active_sql[ctx]));
+  // -- counts
   npc = 0;
   foreach (pc+ in opcode_counts) {
     // fill gaps with zeroes.
@@ -100,8 +204,33 @@ function flushOpcodes(ctx) {
       printf("%d", opcode_counts[pc]);
     npc++;
   }
-  printf("]}\n");
   delete opcode_counts;
+
+  // -- close out counts, pages header
+  printf("],\n \"pages\":  [");
+
+  // -- pages
+  npc = 0;
+  foreach (pc+ in opcode_pages) {
+    // fill gaps with zeroes.
+    while (npc < pc) {
+      if (npc)
+        printf(",0");
+      else
+        printf("0");
+      npc++;
+    }
+    if (pc)
+      printf(",%d", opcode_pages[pc]);
+    else
+      printf("%d", opcode_pages[pc]);
+    npc++;
+  }
+  delete opcode_pages;
+
+  // -- close out obj
+  printf("]}\n");
+
 }
 
 probe end {
