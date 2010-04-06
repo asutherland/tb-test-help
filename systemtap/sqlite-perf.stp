@@ -95,7 +95,6 @@ probe process(@1).function("sqlite3VdbeReset") {
 // maps thread id to the count of pages touched since last clear
 global btree_pages_touched;
 
-//probe process(@1).statement("btreePageLookup@sqlite3.c:38160") {
 probe process(@1).function("btreePageLookup").return {
   // Only count if we found a page, otherwise we're going to end up in
   //  sqlite3BtreeGetPage (and we don't want to double count.)
@@ -106,7 +105,7 @@ probe process(@1).function("btreePageLookup").return {
   }
 }
 
-probe process(@1).function("sqlite3BtreeGetPage") {
+probe process(@1).function("btreeGetPage") {
   ctx = tid();
   btree_pages_touched[ctx]++;
 }
@@ -131,13 +130,13 @@ global opcode_pages;
 // -- effective function entry
 // "db->busyHandler.nBusy = 0;"
 /*
-probe process(@1).statement("sqlite3VdbeExec@sqlite3.c:51324") {
+probe process(@1).statement("sqlite3VdbeExec@sqlite3.c:52690") {
 }
 */
 
 // -- top of the loop for each opcode case
-// "opProperty = opcodeProperty[pOp->opcode];"
-probe process(@1).statement("sqlite3VdbeExec@sqlite3.c:51413") {
+// "if( pOp->opflags & OPFLG_OUT2_PRERELEASE ){"
+probe process(@1).statement("sqlite3VdbeExec@sqlite3.c:52783") {
   ctx = tid();
   depth = thread_sqlite3_step_depth[ctx];
   // bail if nested
@@ -153,7 +152,7 @@ probe process(@1).statement("sqlite3VdbeExec@sqlite3.c:51413") {
 
 // -- bottom of the loop for each opcode case (iff debug or rather !NDEBUG)
 // "assert( pc>=-1 && pc<p->nOp );"
-probe process(@1).statement("sqlite3VdbeExec@sqlite3.c:56364") {
+probe process(@1).statement("sqlite3VdbeExec@sqlite3.c:57939") {
   ctx = tid();
   depth = thread_sqlite3_step_depth[ctx];
   // bail if nested
