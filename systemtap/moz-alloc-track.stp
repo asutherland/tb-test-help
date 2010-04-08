@@ -1,0 +1,195 @@
+/*
+ * Against mozilla 1.9.2.  It would appear I am not building with tracing, so
+ * the conditional bit may not work.
+ *
+ * invoke like so:
+ *   sudo stap -g -DMAXSTRINGLEN=1024 moz-alloc-track.st /path/to/libmozjs.so
+ */
+
+
+// key off of the pointer for the JSFunction
+global jsstr_alloc_counts;
+global jsstr_alloc_total_bytes;
+global jsstr_alloc_func_name;
+global jsstr_alloc_file_path;
+global jsstr_alloc_file_line;
+
+global str_alloc_sizes;
+
+/**
+ * Hackish variable for js_ConcatStrings to convey to js_NewString that a
+ *  concat is in progress and it should only add the marginal string being
+ *  concatenated.
+ *
+ * 0 always means there's nothing active; js_ConcatStrings fast-paths out if
+ *  rn == 0.
+ */
+global concat_in_process_increase;
+
+// in theory this should be contextualized by thread...
+// "ldep = left;"
+probe process(@1).statement("js_ConcatStrings@jsstr.cpp:171") {
+  concat_in_process_increase = $rn;
+}
+
+//probe process(@1).function("js_NewString") {
+// "if (length > JSString::MAX_LENGTH) {"
+probe process(@1).statement("js_NewString@jsstr.cpp:3054") {
+  //printf("CX: %p FP: %p DFP: %p\n", $cx, $cx->fp, $cx->dormantFrameChain);
+  tracing = @defined($cx->thread->data->traceMonitor) ?
+    $cx->thread->data->traceMonitor->tracecx : 0;
+  if (tracing)
+    next;
+
+  fp = $cx->fp;
+  if (!fp)
+    fp = $cx->dormantFrameChain;
+
+  if (concat_in_process_increase) {
+    length = concat_in_process_increase;
+    concat_in_process_increase = 0;
+  }
+  else {
+    length = $length;
+  }
+
+  // if we can't get a frame, at least track what's happening.
+  if (!fp) {
+    jsfun = 0;
+    if (jsstr_alloc_counts[jsfun] == 0) {
+      jsstr_alloc_func_name[jsfun] = "<MYSTERIOUS>";
+      jsstr_alloc_file_path[jsfun] = "<BEYOND THE VEIL>";
+      jsstr_alloc_file_line[jsfun] = 0;
+    }
+    jsstr_alloc_counts[jsfun]++;
+    jsstr_alloc_total_bytes[jsfun] += length;
+    str_alloc_sizes <<< length;
+    next;
+  }
+
+  jsfun = @cast(fp, "JSStackFrame")->fun;
+
+  // first time this round?  look the function's name up
+  if (jsstr_alloc_counts[jsfun] == 0) {
+    if (!jsfun) {
+      atom = 0;
+      jsstr_alloc_func_name[jsfun] = "<no func>";
+    }
+    else {
+      atom = @cast(jsfun, "JSFunction")->atom;
+    }
+
+    if (!atom) {
+      if (jsfun)
+        jsstr_alloc_func_name[jsfun] = "<no atom>";
+    }
+    else {
+      // mask off the tag bits to get a usable pointer
+      atom = atom & ~7;
+
+      // let's max out at 511 chars...
+      len = @cast(atom, "JSString")->mLength & 0x1ff;
+      cp = @cast(atom, "JSString")->mChars;
+
+      jsstr_alloc_func_name[jsfun] = user_u16_string(cp, len);
+    }
+
+    script = @cast(fp, "JSStackFrame")->script;
+    if (script) {
+      jsstr_alloc_file_path[jsfun] =
+        basename(user_string(@cast(script, "JSScript")->filename));
+      jsstr_alloc_file_line[jsfun] = @cast(script, "JSScript")->lineno;
+    }
+    else {
+      jsstr_alloc_file_path[jsfun] = "<no script>";
+      jsstr_alloc_file_line[jsfun] = 0;
+    }
+  }
+  jsstr_alloc_counts[jsfun]++;
+
+  jsstr_alloc_total_bytes[jsfun] += length;
+  if (length > (1024 * 1024 * 64)) {
+    printf("disturbing alloc of size %d\n", length);
+  }
+  str_alloc_sizes <<< length;
+
+  // on trace if...
+  //cx->thread->data->traceMonitor.tracecx != 0
+}
+
+probe process(@1).function("js_GC") {
+  printf("----- js_GC data pages: %d total vm pages: %d\n",
+         proc_mem_data(), proc_mem_size());
+  flushAllocs();
+}
+
+
+probe end(1) {
+  flushAllocs();
+}
+
+function flushAllocs() {
+  foreach (jsfun in jsstr_alloc_total_bytes-) {
+    // bail if we're talking less than 4k.
+    if (jsstr_alloc_total_bytes[jsfun] < (64 * 1024))
+      break;
+
+    printf("%6d %8d %-48s %s:%d\n",
+           jsstr_alloc_counts[jsfun],
+           jsstr_alloc_total_bytes[jsfun] / 1024,
+           jsstr_alloc_func_name[jsfun],
+           jsstr_alloc_file_path[jsfun],
+           jsstr_alloc_file_line[jsfun]);
+  }
+  delete jsstr_alloc_counts;
+  delete jsstr_alloc_total_bytes;
+  delete jsstr_alloc_func_name;
+  delete jsstr_alloc_file_path;
+  delete jsstr_alloc_file_line;
+
+  if (@count(str_alloc_sizes)) {
+    print (@hist_log(str_alloc_sizes));
+    delete str_alloc_sizes;
+  }
+}
+
+/**
+ * Copy a u16 string truncating to ASCII.
+ */
+function user_u16_string:string (addr: long, nchars: long) %{ /* pure */ /* unprivileged */
+  // we need space for the u16...
+  int64_t len = clamp_t(int64_t, THIS->nchars*2, 2, MAXSTRINGLEN);
+  // needs to be even
+  if (len%2)
+    len--;
+  assert_is_myproc();
+  if (_stp_copy_from_user(THIS->__retvalue,
+                          (char __user *) (uintptr_t) THIS->addr,
+                          len) == 0) {
+    // now transform down...
+    char *ocp = THIS->__retvalue;
+    uint16_t *icp = (uint16_t *)THIS->__retvalue;
+    uint16_t *termp = (uint16_t *)&THIS->__retvalue[len];
+    for (;icp < termp; icp++) {
+      if (*icp >= 0x80)
+        *ocp++ = 'X';
+      else
+        *ocp++ = (char)*icp;
+    }
+    *ocp = '\0';
+  }
+  else {
+    strlcpy(THIS->__retvalue, "<problem>", MAXSTRINGLEN);
+  }
+%}
+
+function basename:string (str: string) %{ /* pure */ /* unprivileged */
+  char *cp;
+  char *last_slash = THIS->str;
+  for (cp = THIS->str; *cp != '\0'; cp++) {
+    if (*cp == '/')
+      last_slash = cp+1;
+  }
+
+  strlcpy(THIS->__retvalue, last_slash, strlen(last_slash));
+%}
