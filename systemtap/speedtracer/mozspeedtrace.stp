@@ -1,0 +1,199 @@
+/* *****************************************************************************
+ * OVERVIEW
+ *
+ * Generate GWT Speed Tracer-ish JSON output from the mozilla-1.9.2 platform.
+ *
+ * The end-form data dump format documentation required by Speed Tracer is here:
+ * http://code.google.com/webtoolkit/speedtracer/data-dump-format.html
+ *
+ * General Speed Tracer documentation is here:
+ * http://code.google.com/webtoolkit/speedtracer/
+ *
+ * invoke like so:
+ *  sudo stap -g -DMAXSTRINGLEN=1024 moz-alloc-track.st /path/to/libmozjs.so
+ *
+ * then post-process like so:
+ *
+ * The key stap arguments mean:
+ * - "-g" allows us to use embedded C code
+ * - "-DMAXSTRINGLEN=1024" allows us to process really long strings albeit with
+ *    some potential memory bloat.
+ * - "-b" enables bulk mode transmission of data which means greatly reduced
+ *    userspace crossings (I think... we'll see! :).
+ * - "-sNUM" NUM megabyte per-cpu buffers for bulk transfer
+ * - "-o FILE" names bulk transfer files FILE_cpu.
+ *
+ * This file is made available under the GPLv3 license; its outputs are not
+ *  covered by the license; they are yours for the taking!
+ * Copyright 2010, the Mozilla Foundation.
+ * Andrew Sutherland <asutherland@asutherland.org>
+ * Mozilla Messaging, Inc.
+ *
+ * *****************************************************************************
+ * IMPLEMENTATION DETAILS
+ *
+ * We are unable to emit an immediately usable speed tracer trace because the
+ *  official trace format is tree-structured with nested child records.  Even
+ *  if we ignored the semantic ramifications of nested event loops, we still
+ *  have multiple threads doing things and we do care what all threads get up
+ *  to.  If we had richer data structures available to us we could deal with the
+ *  nesting and what not by only flushing top-level events when they are
+ *  completed, but we don't have that.  Which is just as well because we'd still
+ *  potentially need to set processor affinities.
+ * 
+ * So what we do is emit what is basically a flattened/augmented dialect of the
+ *  speed tracer format that allows us to fairly easily reconstruct things into
+ *  the official representation.  This has the positive side-effect of letting
+ *  us use the bulk mode of operation for theoretically improved performance.
+ *
+ * We emit the following additional attributes for each event:
+ * - tid: The thread id that this event occurred on.
+ * - depth: The event depth for the current thread.
+ * - tseq: The sequence of this event on this thread.  Parents have thread
+ *    sequence numbers preceding their children.  We use this to provide
+ *    certifiably correct reconstruction in the face of multiple threads on
+ *    more than 2 cores given per-cpu buffers.  The nanosec timestamp values
+ *    we also include may be more than sufficient for this and we may drop this
+ *    once all the bugs are worked out of reconstruction.  (We only need this
+ *    if threads can migrate across cores at a higher rate than the timing
+ *    interval's maximum resolution.)
+ *
+ * We encode the following attributes differently:
+ * - time: We store the number of nanoseconds since the start of the session
+ *    rather than the number of milliseconds.  We've got'em, why not use'em?
+ * - duration: We store the duration in nanoseconds instead of milliseconds.
+ *
+ * Events which have children are emitted after their children by virtue of how
+ *  control flow works in this, our causal universe.
+ *
+ * Reconstruction amounts to postfix traversal.  We see every event's children
+ *  before we see the event.  Imagine the following call-stack where time is
+ *  flowing down, the indentation indicates call stack depth and the letters
+ *  indicate each invocation and the meta-data off to the right:
+ *   a     tseq: 0  depth: 0
+ *    b    tseq: 1  depth: 1
+ *     c   tseq: 2  depth: 2
+ *     d   tseq: 3  depth: 2
+ *    e    tseq: 4  depth: 1
+ *     f   tseq: 5  depth: 2
+ * This represents a calling two functions with the first call itself making two
+ *  function calls and the second just one.  The event sequence produced by our
+ *  probes would be: c, d, b, f, e, a.  Our logic goes like so:
+ * - We see 'c' and have no current state.  We stick it in a list and tag it
+ *    with depth 2.
+ * - We see 'd'; it has the same depth as our current list, so we just stick it
+ *    in there.
+ * - We see 'b'; it has a depth less than our current list so we take the
+ *    contents of the list and add them as children to 'b'.  We make a new list
+ *    with 'b' in it and tag it with depth 1.
+ * - We see 'f'; it has greater depth than our active 'b' list so we push a new
+ *    list onto our stack with 'f' in it tagged with depth 2.
+ * - We see 'e'; it has depth less than 'f' so we pop the list adding 'f' as a
+ *    child.  The top list that holds 'b' has the same depth (1), so we add 'e'
+ *    to that list.
+ * - We see 'a'; it has depth less than the 'b' and 'e' list so we pop that list
+ *    and add them as its children.
+ *    
+ *  
+ *
+ * *****************************************************************************
+ * PROTOCOL NOTES
+ *
+ * - "sequence" attributes only appear to exist for top-level records and are
+ *    present in child records (per mock logs).
+ * - "usedHeapSize" and "totalHeapSize" are not used in the mock logs and it's
+ *    not clear how the UI would surface them anyways?  I'll look into this when
+ *    it comes time to attribute memory usage.
+ */
+
+////////////////////////////////////////////////////////////////////////////////
+//////// Shared State
+
+/** Thread counter sequence number */
+global tc_seq;
+/** Thread depth */
+global t_depth;
+
+////////////////////////////////////////////////////////////////////////////////
+//////// Browser Timeline Events
+
+////////////////////////////////////////////////////////////////////////////////
+//// DOM_EVENT : 0
+
+////////////////////////////////////////////////////////////////////////////////
+//// LAYOUT : 1
+
+////////////////////////////////////////////////////////////////////////////////
+//// RECALC_STYLE : 2
+
+////////////////////////////////////////////////////////////////////////////////
+//// PAINT : 3
+
+////////////////////////////////////////////////////////////////////////////////
+//// PARSE_HTML : 4
+
+////////////////////////////////////////////////////////////////////////////////
+//// TIMER_INSTALLED : 5
+
+////////////////////////////////////////////////////////////////////////////////
+//// TIMER_CLEARED : 6
+
+////////////////////////////////////////////////////////////////////////////////
+//// TIMER_FIRED : 7
+
+////////////////////////////////////////////////////////////////////////////////
+//// XHR_READY_STATE_CHANGE : 8
+
+////////////////////////////////////////////////////////////////////////////////
+//// XHR_LOAD : 9
+
+////////////////////////////////////////////////////////////////////////////////
+//// EVAL_SCRIPT : 10
+
+////////////////////////////////////////////////////////////////////////////////
+//// LOG_MESSAGE : 11
+
+// These come from console.markTimeline(message) calls in Chrome.  We could
+//  accomplish the same thing if we exposed a native or found an existing native
+//  we could co-opt.  dump is co-optable given that its rate of invocation is
+//  low enough that we could perform a simple string formatting rule to
+//  determine what wants actually wants to get logged.
+
+////////////////////////////////////////////////////////////////////////////////
+//// NETWORK_RESOURCE_START : 12
+
+////////////////////////////////////////////////////////////////////////////////
+//// NETWORK_RESOURCE_RESPONSE: 13
+
+////////////////////////////////////////////////////////////////////////////////
+//// NETWORK_RESOURCE_FINISH : 14
+
+////////////////////////////////////////////////////////////////////////////////
+//// JAVASCRIPT_CALLBACK : 15
+
+////////////////////////////////////////////////////////////////////////////////
+//// RESOURCE_DATA_RECEIVED : 16
+
+////////////////////////////////////////////////////////////////////////////////
+//// GC_EVENT : 17
+
+////////////////////////////////////////////////////////////////////////////////
+//// MARK_DOM_CONTENT : 18
+
+////////////////////////////////////////////////////////////////////////////////
+//// MARK_LOAD_EVENT : 19
+
+////////////////////////////////////////////////////////////////////////////////
+//////// Speed Tracer Events
+
+////////////////////////////////////////////////////////////////////////////////
+//// TAB_CHANGED : 0x7f ff ff fe
+
+////////////////////////////////////////////////////////////////////////////////
+//// NETWORK_RESOURCE_UPDATE : 0x7f ff ff fd
+
+////////////////////////////////////////////////////////////////////////////////
+//// PROFILE_DATA : 0x7f ff ff fc
+
+// The documentation really cops out here (but avoids calling attention to it :)
+
