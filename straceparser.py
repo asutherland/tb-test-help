@@ -1,4 +1,5 @@
 import pyparsing as pyp
+import datetime
 
 supLParen = pyp.Literal('(').suppress()
 supRParen = pyp.Literal(')').suppress()
@@ -39,9 +40,20 @@ pNamedStruct = pyp.Group(pyp.Dict(supLBrace + pKeyValPairs + supRBrace))
 pAnonStruct = supLBrace + pValues + supRBrace
 pStruct = (pNamedStruct | pAnonStruct)
 pList = supLBracket + pValues + supRBracket
-pCasty = pyp.Group(pConstant + supLParen + pValue + supRParen)
+# this now handles both cast(value) and cast(value, value, ...)
+pCasty = pyp.Group(pConstant + supLParen + pValues + supRParen)
 
-pValue << (pPtr | pCasty | pAggNums | pStr | pStruct | pList)
+# It's absurd because it's bare.
+# 2010/04/22-10:57:45
+posNum2 = pyp.Word(pyp.nums, exact=2)
+posNum4 = pyp.Word(pyp.nums, exact=4)
+pAbsurdDateFmt = pyp.Combine(posNum4 + '/' + posNum2 + '/' + posNum2 +
+                             '-' + posNum2 + ':' + posNum2 + ':' + posNum2)
+def actAbsurdDateFmt(s, l, toks):
+    return datetime.datetime.strptime(toks[0], "%Y/%m/%d-%H:%M:%S")
+pAbsurdDateFmt.setParseAction(actAbsurdDateFmt)
+
+pValue << (pAbsurdDateFmt | pPtr | pCasty | pAggNums | pStr | pStruct | pList)
 pValues << pyp.Group(pyp.Optional(pyp.delimitedList(pValue)))
 
 pParenData = pyp.Optional(pyp.Literal('in')|pyp.Literal('out')) + pList
@@ -88,6 +100,7 @@ O_RDONLY|0644
 [3, {st_mode=S_IFREG|0644, st_size=1997, ...}]
 {entry_number:6, base_addr:0xb42ffb90, limit:1048575}
 {entry_number:6, base_addr:0xb42ffb90, limit:1048575, seg_32bit:1, foo:0}
+{st_mtime=2010/04/22-10:57:45, st_ctime=2010/04/22-10:57:45}
 '''
 
     for line in values.splitlines():
@@ -112,6 +125,8 @@ stat64("/foo/bar/baz", {st_mode=S_IFREG|0644, st_size=1997, ...}) = 0
 clone(foo=0, bar=0) = 0
 clone(child_stack=0xb42ff464, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, parent_tidptr=0xb42ffbd8, {entry_number:6, base_addr:0xb42ffb90, limit:1048575, seg_32bit:1, contents:0, read_exec_only:0, limit_in_pages:1, seg_not_present:0, useable:1}, child_tidptr=0xb42ffbd8) = 6928
 connect(60, {sa_family=AF_INET, sin_port=htons(993), sin_addr=inet_addr("72.249.41.52")}, 16) = -1 EINPROGRESS (Operation now in progress)
+fstat(42, {st_dev=makedev(253, 0)}) = 0
+fstat(42, {st_dev=makedev(253, 0), st_ino=398426, st_mode=S_IFREG|0644, st_nlink=1, st_uid=500, st_gid=500, st_blksize=4096, st_blocks=15408, st_size=7882568, st_atime=2010/04/22-10:57:49, st_mtime=2010/04/22-10:57:45, st_ctime=2010/04/22-10:57:45}) = 0
 '''
 
     for line in lines.splitlines():
