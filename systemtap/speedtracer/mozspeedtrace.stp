@@ -25,6 +25,7 @@
  *
  * This file is made available under the GPLv3 license; its outputs are not
  *  covered by the license; they are yours for the taking!
+ *
  * Copyright 2010, the Mozilla Foundation.
  * Andrew Sutherland <asutherland@asutherland.org>
  * Mozilla Messaging, Inc.
@@ -105,14 +106,51 @@
  *    not clear how the UI would surface them anyways?  I'll look into this when
  *    it comes time to attribute memory usage.
  */
+//@@stapargs:-g -DMAXSTRINGLEN=1024 -b -s2 -o $TDIR/bulk
 
 ////////////////////////////////////////////////////////////////////////////////
 //////// Shared State
 
-/** Thread counter sequence number */
-global tc_seq;
-/** Thread depth */
+/** maps [thread] to next sequence number */
+global t_seq;
+/** maps [thread] to current thread depth */
 global t_depth;
+/** maps [thread, depth] to sequence number */
+global td_seq;
+/** maps [thread, depth] to start time */
+global td_start;
+
+global dawn_of_time;
+
+probe begin {
+  dawn_of_time = gettimeofday_ns();
+}
+
+function track_enter(eventCode) {
+  now = gettimeofday_ns();
+  ctx = tid();
+  seq = tc_seq[ctx]++;
+  depth = t_depth[ctx]++;
+
+  td_seq[ctx, depth] = seq;
+  td_start[ctx, depth] = now;
+}
+
+function track_leave(eventCode) {
+  now = gettimeofday_ns();
+  ctx = tid();
+  depth = --t_depth[ctx];
+
+  seq = td_seq[ctx, depth];
+  start = td_start[ctx, depth];
+
+  duration = now - start;
+
+  printf("{\"tid\":%d,\"depth\":%d,\"tseq\":%d,\"type\":%d,"
+         "\"time\":%d,\"duration\":%d}\n",
+         ctx, depth, seq, eventCode,
+         start - dawn_of_time, duration);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 //////// Browser Timeline Events
@@ -123,8 +161,30 @@ global t_depth;
 ////////////////////////////////////////////////////////////////////////////////
 //// LAYOUT : 1
 
+probe process(@@file:bin/components/libgklayout.so).function("PresShell::DoReflow") {
+  track_enter(1);
+}
+
+// returns false when interrupted, true when completed
+probe process(@@file:bin/components/libgklayout.so).function("PresShell::DoReflow").return {
+  track_leave(1);
+}
+
+
 ////////////////////////////////////////////////////////////////////////////////
 //// RECALC_STYLE : 2
+
+// These are also somewhat related to PresShell::FlushPendingNotifications, but
+//  the hope is that we catch all that through specific coverage of its
+//  children.
+
+probe process(@@lib:bin/components/libgklayout.so).function("nsCSSFrameConstructor::ProcessPendingRestyles") {
+  track_enter(2);
+}
+
+probe process(@@lib:bin/components/libgklayout.so).function("nsCSSFrameConstructor::ProcessPendingRestyles").return {
+  track_leave(2);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 //// PAINT : 3
@@ -140,6 +200,28 @@ global t_depth;
 
 ////////////////////////////////////////////////////////////////////////////////
 //// TIMER_FIRED : 7
+
+// === Global Window setTimeout/setInterval timers
+
+//@@file:mozilla/dom/base/nsGlobalWindow.cpp
+//@@method:nsGlobalWindow::RunTimeout
+//@@lineseek:nsGlobalWindow::RunTimeout(nsTimeout *aTimeout)
+//@@lineseek:if (!scriptObject) {
+probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
+  track_enter(7);
+}
+
+//@@file:mozilla/dom/base/nsGlobalWindow.cpp
+//@@method:nsGlobalWindow::RunTimeout
+//@@lineseek:nsGlobalWindow::RunTimeout(nsTimeout *aTimeout)
+//@@lineseek:if (!scriptObject) {
+//@@lineseek:handler = nsnull; // drop reference before dropping timeout refs.
+probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
+  track_leave(7);
+}
+
+// === nsITimer (convertible to Global Window)
+
 
 ////////////////////////////////////////////////////////////////////////////////
 //// XHR_READY_STATE_CHANGE : 8
@@ -176,6 +258,15 @@ global t_depth;
 
 ////////////////////////////////////////////////////////////////////////////////
 //// GC_EVENT : 17
+
+probe process(@@lib:lib/libmozjs.so).function("js_GC") {
+  track_enter(17);
+}
+
+probe process(@@lib:lib/libmozjs.so).function("js_GC").return {
+  track_leave(17);
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 //// MARK_DOM_CONTENT : 18
