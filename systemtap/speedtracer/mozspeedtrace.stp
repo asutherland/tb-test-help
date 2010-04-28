@@ -106,7 +106,9 @@
  *    not clear how the UI would surface them anyways?  I'll look into this when
  *    it comes time to attribute memory usage.
  */
-//@@stapargs:-g -DMAXSTRINGLEN=1024 -b -s2 -o $TDIR/bulk
+// -b implies an -o option...
+//@@stapargs:-g,-DMAXSTRINGLEN=1024,-b,-s2
+//@@postprocess:stpostproc.py
 
 ////////////////////////////////////////////////////////////////////////////////
 //////// Shared State

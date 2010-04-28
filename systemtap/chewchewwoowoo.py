@@ -1,4 +1,4 @@
-#/usr/bin/python
+#/usr/bin/python2.6
 
 # This file is intended to be a pragmatic wrapper around invoking systemtap
 #  scripts that compensates for the following limitations we currently
@@ -119,10 +119,16 @@ class ScriptChewer(object):
         self.known_libs = {}
 
         # -- @@stapargs
-        self.stap_args = ''
+        self.stap_args = []
+
+        # -- @@postprocess
+        self.postprocess_script = None
 
     def _stmt_stapargs(self, val):
-        self.stap_args = val
+        self.stap_args = val.split(',')
+
+    def _stmt_postprocess(self, val):
+        self.postprocess_script = val
 
     def _stmt_file(self, val):
         '''
@@ -296,23 +302,52 @@ class MozMain(object):
         tmp_dir = '/tmp/chewtap-%d' % (pid,)
         os.mkdir(tmp_dir)
 
-        # - BUILD the tapscript
+        # -- BUILD the tapscript
         context = MozChewContext(objdir)
         chewer = ScriptChewer(context)
         chewer.chew_script(tapscript)
         chewer.maybe_write_script(built_tapscript)
 
-        # - FETCH required data about the running process.
+        # -- FETCH required data about the running process.
         # we need the proc maps files to convert pointers
         shutil.copyfile(os.path.join(proc_dir, 'maps'),
                         os.path.join(tmp_dir, 'maps'))
         
-        # - RUN systemtap
-        # fixup our systemtap args...
+        # -- RUN systemtap
+        # - build args
+        # assume the user is in the stapdev group
+        args = ['/usr/bin/stap']
+        # the script tells us what arguments it wants
+        args.extend(chewer.stap_args)
+        if '-b' in chewer.stap_args:
+            args.push('-o %s' % (os.path.join(tmp_dir), 'bulk'),)
+        # the built script
+        args.append(built_tapscript)
+        # the library paths
+        args.extend(chewer.arg_values)
         
+        # - run
+        # The expected use-case is to hit control-c when done, at which point
+        #  we want to tell stap to close up shop.
+        pope = subprocess.Popen(args, stdin=subprocess.PIPE)
         try:
-            pass
-        except 
+            print 'Hit control-C to terminate the tapscript'
+            pope.communicate()
+            # if we get here, the user did not hit control-c and this means
+            #  either the tapscript terminated itself or there was a problem...
+            if pope.poll():
+                # problem!
+                print 'Detected stap error result code, not post-processing'
+                print 'Any results will be in', tmp_dir
+                return pope.returncode
+        except KeyboardInterrupt:
+            # (python2.6 required)
+            pope.terminate()
+
+        # -- POST PROCESS
+        if chewer.postprocess_script:
+            print 'I really want to post-process but I am not gonna'
+        
 
         return 0
 

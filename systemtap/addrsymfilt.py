@@ -125,16 +125,16 @@ class BinaryInfo(object):
         return None, None
 
 class ProcInfo(object):
-    def __init__(self, pid):
+    def __init__(self, pid, mappath=None):
         self.pid = int(pid)
         #: Tuples of (low addr, high addr, adjust, binary).
         #:  The low address is inclusive, the high address is exclusive.
         self.ranges = []
         self.binaries_by_path = {}
 
-        self._read_maps()
+        self._read_maps(mappath)
 
-    def _read_maps(self):
+    def _read_maps(self, mappath=None):
         '''read /proc/PID/maps to get info about the address space'''
         # example:
         #address           perms offset  dev   inode      pathname
@@ -143,7 +143,9 @@ class ProcInfo(object):
         # offset: the offset into the mapped file
         # dev: major/minor device number of the file's origin
         # inode: inode on the origin device
-        mapfile = open('/proc/%d/maps' % (self.pid,), 'r')
+        if mappath is None:
+            mappath = '/proc/%d/maps' % (self.pid,)
+        mapfile = open(mappath, 'r')
         for line in mapfile:
             bits = line.rstrip().split(None, 5)
             # ignore things without paths, we can't look in them
