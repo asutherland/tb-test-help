@@ -23,7 +23,7 @@
 #  both invoke that file as well as produce a systemtap script that could be
 #  used by others without this script.
 
-import optparse, os.path, re, shutil, subprocess, sys, time
+import imp, optparse, os.path, re, shutil, struct, subprocess, sys, time
 
 class ChewContext(object):
     '''
@@ -207,10 +207,10 @@ class ScriptChewer(object):
         return rval
 
     def chew_script(self, path):
-        expr_re = re.compile(r'\(@@([^:]+):([^\)]+)\)')
+        expr_re = re.compile(r'@@([^:]+):([^\)]+)([,\)])')
         def expr_helper(match):
             exprfunc = getattr(self, '_expr_%s' % (match.group(1),))
-            return '(%s)' % (exprfunc(match.group(2)),)
+            return '%s%s' % (exprfunc(match.group(2)),match.group(3))
 
         out_lines = self.out_lines = []
 
@@ -262,6 +262,88 @@ class ScriptChewer(object):
 
         return wrote_it
 
+class BulkProcessor(object):
+    '''
+    In bulk mode each per-cpu file is written as a series of records where the
+    header is a _stp_trace record:
+
+    struct _stp_trace {
+      uint32_t sequence;      /* event number */
+      uint32_t pdu_len;       /* length of data after this trace */
+    };
+
+    The headers are not aligned; they can start at any byte offset.
+
+    We take on the responsibility of stitching together the bulk files and
+    providing the event blobs in-order.
+
+    In theory at some point we might be able to do this in a realtime streaming
+    fashion by watching as the files get appended to or something along those
+    lines, but we don't do it right now.  We do try and keep our memory usage
+    down though.
+
+    Use us like an iterator in a for loop...
+    for blob in BulkProcessor('/tmp/dir_with_bulk/files'):
+        print 'I got a blob!', blob
+    '''
+
+    def __init__(self, path):
+        '''
+        We expect bulk_# files to be found in path.
+        '''
+        self.files = []
+        self.next_seqs_by_file = []
+        self.next_blobs_by_file = []
+
+        i = 0
+        while True:
+            speculative_path = os.path.join(path, 'bulk_%d' % (i,))
+            if not os.path.exists(speculative_path):
+                break
+            self.files.append(open(speculative_path, 'r'))
+            seq, blob = self._read_next(i)
+            self.next_seqs_by_file.append(seq)
+            self.next_blobs_by_file.append(blob)
+            i += 1
+
+    def _read_next(self, i):
+        '''
+        Read the next seq and blob packet for the file at the given index.  If
+        we encounter a problem we close the file and return None for both
+        values.
+        '''
+        try:
+            seq, pdu_len = struct.unpack('II', self.files[i].read(8))
+            blob = self.files[i].read(pdu_len)
+            return seq, blob
+        except:
+            self.files[i].close()
+            return None, None
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        min_idx = 0
+        min_seq = self.next_seqs_by_file[0]
+        for i in range(1, len(self.next_seqs_by_file)):
+            seq = self.next_seqs_by_file[i]
+            if (min_seq is None) or seq < min_seq:
+                min_idx = i
+                min_seq = seq
+        if min_seq is None:
+            raise StopIteration
+
+        min_blob = self.next_blobs_by_file[min_idx]
+        #print 'min_seq', min_seq, 'min_blob', min_blob
+        next_seq, next_blob = self._read_next(min_idx)
+        self.next_seqs_by_file[min_idx] = next_seq
+        self.next_blobs_by_file[min_idx] = next_blob
+
+        return min_blob
+        
+
+
 class MozMain(object):
     '''
     This command-line driver is mozilla biased.  Go get your own driver, other
@@ -273,11 +355,17 @@ class MozMain(object):
 
     def _build_parser(self):
         parser = optparse.OptionParser(usage=self.usage)
+
+        parser.add_option('--re-run',
+                          dest='rerunpath',
+                          default=None)
         return parser
 
     def run(self):
         parser = self._build_parser()
         options, args = parser.parse_args()
+
+        dorunrun = True
 
         if len(args) < 2:
             parser.print_usage()
@@ -310,14 +398,19 @@ class MozMain(object):
 
         # -- FETCH required data about the running process.
         # we need a temporary directory to hold our data for this invocation
-        tmp_dir = '/tmp/chewtap-%d' % (pid,)
-        if os.path.exists(tmp_dir):
-            tmp_dir += '-%d' % (int(time.time()),)
-        os.mkdir(tmp_dir)
+        
+        if options.rerunpath:
+            tmp_dir = options.rerunpath
+            dorunrun = False
+        else:
+            tmp_dir = '/tmp/chewtap-%d' % (pid,)
+            if os.path.exists(tmp_dir):
+                tmp_dir += '-%d' % (int(time.time()),)
+            os.mkdir(tmp_dir)
 
-        # we need the proc maps files to convert pointers
-        shutil.copyfile(os.path.join(proc_dir, 'maps'),
-                        os.path.join(tmp_dir, 'maps'))
+            # we need the proc maps files to convert pointers
+            shutil.copyfile(os.path.join(proc_dir, 'maps'),
+                            os.path.join(tmp_dir, 'maps'))
         
         # -- RUN systemtap
         # - build args
@@ -335,26 +428,42 @@ class MozMain(object):
         # - run
         # The expected use-case is to hit control-c when done, at which point
         #  we want to tell stap to close up shop.
-        pope = subprocess.Popen(args, stdin=subprocess.PIPE)
-        try:
-            print 'Hit control-C to terminate the tapscript'
-            pope.communicate()
-            # if we get here, the user did not hit control-c and this means
-            #  either the tapscript terminated itself or there was a problem...
-            if pope.poll():
-                # problem!
-                print 'Detected stap error result code, not post-processing'
-                print 'Any results will be in', tmp_dir
-                return pope.returncode
-        except KeyboardInterrupt:
-            # (python2.6 required)
-            pope.terminate()
+        if dorunrun:
+            pope = subprocess.Popen(args, stdin=subprocess.PIPE)
+            try:
+                print 'Hit control-C to terminate the tapscript'
+                pope.communicate()
+                # if we get here, the user did not hit control-c and this means
+                #  either the tapscript terminated itself or there was a
+                #  problem...
+                if pope.poll():
+                    # problem!
+                    print 'Detected stap error result code, not post-processing'
+                    print 'Any results will be in', tmp_dir
+                    return pope.returncode
+            except KeyboardInterrupt:
+                # (python2.6 required)
+                pope.terminate()
 
         # -- POST PROCESS
         if chewer.postprocess_script:
-            print 'I really want to post-process but I am not gonna'
-        
+            search_path = [os.path.dirname(os.path.abspath(tapscript))]
+            search_path.extend(sys.path)
+            fp, modpath, desc = imp.find_module(chewer.postprocess_script,
+                                                search_path)
+            module = None
+            try:
+                module = imp.load_module(chewer.postprocess_script,
+                                         fp, modpath, desc)
+            finally:
+                if fp:
+                    fp.close()
 
+            if module:
+                bulkproc = BulkProcessor(tmp_dir)
+                modproc = module.Processor()
+                modproc.process(tmp_dir, bulkproc)
+        
         return 0
 
 if __name__ == '__main__':

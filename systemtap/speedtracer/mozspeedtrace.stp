@@ -108,17 +108,13 @@
  */
 // -b implies an -o option...
 //@@stapargs:-g,-DMAXSTRINGLEN=1024,-b,-s2
-//@@postprocess:stpostproc.py
+//@@postprocess:stpostproc
 
 ////////////////////////////////////////////////////////////////////////////////
 //////// Shared State
 
-/** maps [thread] to next sequence number */
-global t_seq;
 /** maps [thread] to current thread depth */
 global t_depth;
-/** maps [thread, depth] to sequence number */
-global td_seq;
 /** maps [thread, depth] to start time */
 global td_start;
 
@@ -131,27 +127,24 @@ probe begin {
 function track_enter(eventCode) {
   now = gettimeofday_ns();
   ctx = tid();
-  seq = t_seq[ctx]++;
   depth = t_depth[ctx]++;
 
-  td_seq[ctx, depth] = seq;
   td_start[ctx, depth] = now;
 }
 
-function track_leave(eventCode) {
+function track_leave(eventCode, data) {
   now = gettimeofday_ns();
   ctx = tid();
   depth = --t_depth[ctx];
 
-  seq = td_seq[ctx, depth];
   start = td_start[ctx, depth];
 
   duration = now - start;
 
-  printf("{\"tid\":%d,\"depth\":%d,\"tseq\":%d,\"type\":%d,"
-         "\"time\":%d,\"duration\":%d}\n",
-         ctx, depth, seq, eventCode,
-         start - dawn_of_time, duration);
+  printf("{\"tid\":%d,\"depth\":%d,\"type\":%d,"
+         "\"time\":%d,\"duration\":%d,\"data\":{%s}}\n",
+         ctx, depth, eventCode,
+         start - dawn_of_time, duration, data);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -169,7 +162,7 @@ probe process(@@lib:bin/components/libgklayout.so).function("PresShell::DoReflow
 
 // returns false when interrupted, true when completed
 probe process(@@lib:bin/components/libgklayout.so).function("PresShell::DoReflow").return {
-  track_leave(1);
+  track_leave(1, "");
 }
 
 
@@ -185,7 +178,7 @@ probe process(@@lib:bin/components/libgklayout.so).function("nsCSSFrameConstruct
 }
 
 probe process(@@lib:bin/components/libgklayout.so).function("nsCSSFrameConstructor::ProcessPendingRestyles").return {
-  track_leave(2);
+  track_leave(2, "");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -219,7 +212,17 @@ probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
 //@@lineseek:if (!scriptObject) {
 //@@lineseek:handler = nsnull; // drop reference before dropping timeout refs.
 probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
-  track_leave(7);
+  scriptObj = $scriptObject;
+  if (scriptObj) {
+    // This is actually the timer being invoked, not the originator of the 
+    //  timer; this runs contrary to the SpeedTracer idiom right now.  We will
+    //  need to figure things out/normalize later.
+    data = script_info_from_jsfunobj(scriptObj);
+  }
+  else {
+    data = "";
+  }
+  track_leave(7, data);
 }
 
 // === nsITimer (convertible to Global Window)
@@ -266,7 +269,7 @@ probe process(@@lib:lib/libmozjs.so).function("js_GC") {
 }
 
 probe process(@@lib:lib/libmozjs.so).function("js_GC").return {
-  track_leave(17);
+  track_leave(17, "");
 }
 
 
@@ -290,3 +293,144 @@ probe process(@@lib:lib/libmozjs.so).function("js_GC").return {
 
 // The documentation really cops out here (but avoids calling attention to it :)
 
+
+////////////////////////////////////////////////////////////////////////////////
+//////// Common JS extraction stuff
+
+global jsfun_cache_func_name;
+global jsfun_cache_filename;
+global jsfun_cache_line;
+
+function jsval_to_string(jsval) {
+  if (jsval == 0) {
+    return "null";
+  }
+  // integer!
+  else if (jsval&0x1) {
+    return sprintf("%d", jsval >> 1)
+  }
+
+  tag = jsval & 0x7;
+  // double
+  if (tag == 0x2) {
+    //return sprintf("%f",
+    //               @cast(jsval & ~0x7, "jsdouble", @@lib:lib/libmozjs.so));
+    return "<double>";
+  }
+  // string
+  else if (tag == 0x4) {
+    jsval = jsval & ~0x7;
+    len = @cast(jsval, "JSString", @@lib:lib/libmozjs.so)->mLength & 0x1ff;
+    cp = @cast(jsval, "JSString", @@lib:lib/libmozjs.so)->mChars;
+
+    return user_u16_string(cp, len);
+  }
+  // special
+  else if (tag == 0x6) {
+    thing = jsval >> 3;
+    if (thing == 0)
+      return "false";
+    else if (thing == 1)
+      return "true";
+    else if (thing == 2)
+      return "undefined";
+    else
+      return "unknown special";
+  }
+  return sprintf("<??? %p>", jsval);
+}
+
+function script_info_from_jsfunobj(jsfunobj) {
+  if (jsfunobj) {
+    jsfun = @cast(jsfunobj, "JSObject", @@lib:lib/libmozjs.so)->fslots[2];
+  }
+  else {
+    jsfun = 0;
+  }
+  return script_info_from_jsfun(jsfun);
+}
+
+function script_info_from_jsfun(jsfun) {
+  if (jsfun_cache_line[jsfun] == 0) {
+    if (!jsfun) {
+      atom = 0;
+      jsfun_cache_func_name[jsfun] = "<no func>";
+    }
+    else {
+      atom = @cast(jsfun, "JSFunction", @@lib:lib/libmozjs.so)->atom;
+    }
+
+    jsfun_cache_func_name[jsfun] = jsval_to_string(atom);
+
+    funflags = @cast(jsfun, "JSFunction", @@lib:lib/libmozjs.so)->flags;
+
+    // interpreted?
+    if ((funflags & 0xc000) >= 0x4000) {
+      script = @cast(jsfun, "JSFunction", @@lib:lib/libmozjs.so)->u->i->script;
+      if (script) {
+        jsfun_cache_filename[jsfun] =
+          basename(user_string(@cast(script, "JSScript",
+                                     @@lib:lib/libmozjs.so)->filename));
+        jsfun_cache_line[jsfun] = @cast(script, "JSScript",
+                                        @@lib:lib/libmozjs.so)->lineno || 1;
+      }
+      else {
+        jsfun_cache_filename[jsfun] = "<no script>";
+        jsfun_cache_line[jsfun] = 1;
+      }
+    }
+    else { // native
+      // XXX emit pointer with translation decorations.
+      jsfun_cache_filename[jsfun] = "<native>";
+      jsfun_cache_line[jsfun] = 1;
+    }
+  }
+  return sprintf("\"callerScriptName\":\"%s\","
+                 "\"callerScriptLine\":%d,"
+                 "\"callerFunctionName\":\"%s\"",
+                 jsfun_cache_filename[jsfun],
+                 jsfun_cache_line[jsfun],
+                 jsfun_cache_func_name[jsfun]);
+}
+
+
+/**
+ * Copy a u16 string truncating to ASCII.
+ */
+function user_u16_string:string (addr: long, nchars: long) %{ /* pure */ /* unprivileged */
+  // we need space for the u16...
+  int64_t len = clamp_t(int64_t, THIS->nchars*2, 2, MAXSTRINGLEN);
+  // needs to be even
+  if (len%2)
+    len--;
+  assert_is_myproc();
+  if (_stp_copy_from_user(THIS->__retvalue,
+                          (char __user *) (uintptr_t) THIS->addr,
+                          len) == 0) {
+    // now transform down...
+    char *ocp = THIS->__retvalue;
+    uint16_t *icp = (uint16_t *)THIS->__retvalue;
+    uint16_t *termp = (uint16_t *)&THIS->__retvalue[len];
+    for (;icp < termp; icp++) {
+      if (*icp >= 0x80)
+        *ocp++ = 'X';
+      else
+        *ocp++ = (char)*icp;
+    }
+    *ocp = '\0';
+  }
+  else {
+    strlcpy(THIS->__retvalue, "<problem>", MAXSTRINGLEN);
+  }
+%}
+
+function basename:string (str: string) %{ /* pure */ /* unprivileged */
+  char *cp;
+  char *last_slash = THIS->str;
+  for (cp = THIS->str; *cp != '\0'; cp++) {
+    if (*cp == '/')
+      last_slash = cp+1;
+  }
+
+  strlcpy(THIS->__retvalue, last_slash, strlen(last_slash) + 1);
+%}
