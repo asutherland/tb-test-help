@@ -24,6 +24,7 @@
 #  used by others without this script.
 
 import imp, optparse, os.path, re, shutil, struct, subprocess, sys, time
+import addrsymfilt
 
 class ChewContext(object):
     '''
@@ -159,8 +160,8 @@ class ScriptChewer(object):
             raise Exception('No current file lines to process @@lineseek')
 
         if self.src_line is not None:
-            # start on the line after our last match
-            startLine = self.src_line + 1
+            # start on the line after our last match (we already added 1!)
+            startLine = self.src_line
         else:
             startLine = 0
         lines = self.cached_file_lines
@@ -447,6 +448,9 @@ class MozMain(object):
 
         # -- POST PROCESS
         if chewer.postprocess_script:
+            # provide it with the address sym filter; assuming required.
+            procinfo = addrsymfilt.ProcInfo(pid, os.path.join(tmp_dir, 'maps'))
+
             search_path = [os.path.dirname(os.path.abspath(tapscript))]
             search_path.extend(sys.path)
             fp, modpath, desc = imp.find_module(chewer.postprocess_script,
@@ -462,7 +466,7 @@ class MozMain(object):
             if module:
                 bulkproc = BulkProcessor(tmp_dir)
                 modproc = module.Processor()
-                modproc.process(tmp_dir, bulkproc)
+                modproc.process(tmp_dir, bulkproc, procinfo)
         
         return 0
 

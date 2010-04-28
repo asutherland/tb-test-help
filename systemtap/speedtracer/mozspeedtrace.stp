@@ -117,6 +117,8 @@
 global t_depth;
 /** maps [thread, depth] to start time */
 global td_start;
+/** maps [thread, depth] to pre-fetched data */
+global td_pre_data;
 
 global dawn_of_time;
 
@@ -124,12 +126,15 @@ probe begin {
   dawn_of_time = gettimeofday_ns();
 }
 
-function track_enter(eventCode) {
+function track_enter(eventCode, pre_data) {
   now = gettimeofday_ns();
   ctx = tid();
   depth = t_depth[ctx]++;
 
   td_start[ctx, depth] = now;
+  td_pre_data[ctx, depth] = pre_data;
+
+  //printf("enter: %d @ %d ... %s\n", eventCode, depth, pre_data);
 }
 
 function track_leave(eventCode, data) {
@@ -138,14 +143,18 @@ function track_leave(eventCode, data) {
   depth = --t_depth[ctx];
 
   start = td_start[ctx, depth];
+  pre_data = td_pre_data[ctx, depth];
 
   duration = now - start;
 
+  //printf("exit: %d @ %d ... %s\n", eventCode, depth, data);
+
   printf("{\"tid\":%d,\"depth\":%d,\"type\":%d,"
-         "\"time\":%d,\"duration\":%d,\"data\":{%s}}\n",
+         "\"time\":%d,\"duration\":%d,\"data\":{%s%s}}\n",
          ctx, depth, eventCode,
-         start - dawn_of_time, duration, data);
+         start - dawn_of_time, duration, pre_data, data);
 }
+
 
 ////////////////////////////////////////////////////////////////////////////////
 //////// Browser Timeline Events
@@ -157,7 +166,7 @@ function track_leave(eventCode, data) {
 //// LAYOUT : 1
 
 probe process(@@lib:bin/components/libgklayout.so).function("PresShell::DoReflow") {
-  track_enter(1);
+  track_enter(1, "");
 }
 
 // returns false when interrupted, true when completed
@@ -174,7 +183,7 @@ probe process(@@lib:bin/components/libgklayout.so).function("PresShell::DoReflow
 //  children.
 
 probe process(@@lib:bin/components/libgklayout.so).function("nsCSSFrameConstructor::ProcessPendingRestyles") {
-  track_enter(2);
+  track_enter(2, "");
 }
 
 probe process(@@lib:bin/components/libgklayout.so).function("nsCSSFrameConstructor::ProcessPendingRestyles").return {
@@ -197,13 +206,27 @@ probe process(@@lib:bin/components/libgklayout.so).function("nsCSSFrameConstruct
 //// TIMER_FIRED : 7
 
 // === Global Window setTimeout/setInterval timers
+// we just note the JS boundary crossing here
 
 //@@file:mozilla/dom/base/nsGlobalWindow.cpp
 //@@method:nsGlobalWindow::RunTimeout
 //@@lineseek:nsGlobalWindow::RunTimeout(nsTimeout *aTimeout)
 //@@lineseek:if (!scriptObject) {
 probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
-  track_enter(7);
+  if ($scriptObject)
+    track_enter(15, ""); // but we're calling into JS here...
+}
+
+// the eval case
+//@@file:mozilla/dom/base/nsGlobalWindow.cpp
+//@@method:nsGlobalWindow::RunTimeout
+//@@lineseek:nsGlobalWindow::RunTimeout(nsTimeout *aTimeout)
+//@@lineseek:if (!scriptObject) {
+//@@lineseek:PRBool is_undefined;
+probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
+  data = sprintf("\"scriptName\":\"%s\",\"scriptLine\":%d",
+                 user_string($filename), $lineNo);
+  track_enter(15, data);
 }
 
 //@@file:mozilla/dom/base/nsGlobalWindow.cpp
@@ -213,19 +236,42 @@ probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
 //@@lineseek:handler = nsnull; // drop reference before dropping timeout refs.
 probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
   scriptObj = $scriptObject;
+  // the non-scriptObj case is handled by the preceding probe
   if (scriptObj) {
-    // This is actually the timer being invoked, not the originator of the 
-    //  timer; this runs contrary to the SpeedTracer idiom right now.  We will
-    //  need to figure things out/normalize later.
     data = script_info_from_jsfunobj(scriptObj);
+    track_leave(15, data);
   }
   else {
-    data = "";
+    track_leave(15, "");
   }
-  track_leave(7, data);
 }
 
 // === nsITimer (convertible to Global Window)
+
+//@@file:mozilla/xpcom/threads/nsTimerImpl.cpp
+//@@method:nsTimerImpl::Fire
+//@@lineseek:if (callbackType == CALLBACK_TYPE_INTERFACE)
+probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
+  track_enter(7, "");
+
+  // fake an entry to say where we are going, native-like.
+  if ($callbackType == 2)
+    timerAddr = $callback->c;
+  else
+    timerAddr = @cast(&$callback, "be_a_pptr", "<be_a_ptr.h>")[0];
+
+  data = sprintf("\"scriptName\":\":!vt:%x\",\"scriptLine\":0", timerAddr);
+  track_enter(15, data);
+}
+
+//@@file:mozilla/xpcom/threads/nsTimerImpl.cpp
+//@@method:nsTimerImpl::Fire
+//@@lineseek:if (callbackType == CALLBACK_TYPE_INTERFACE)
+//@@lineseek:mFiring = PR_FALSE;
+probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
+  track_leave(15, "");
+  track_leave(7, "");
+}
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -258,6 +304,52 @@ probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
 ////////////////////////////////////////////////////////////////////////////////
 //// JAVASCRIPT_CALLBACK : 15
 
+// === Event Loop (abuse of this event)
+
+//@@file:mozilla/xpcom/threads/nsThread.cpp
+//@@method:nsThread::ProcessNextEvent
+//@@lineseek:nsThread::ProcessNextEvent(PRBool mayWait, PRBool *result)
+//@@lineseek:if (event) {
+probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
+  // $event->mRawPtr's value is the address of an instance on the heap
+  // The first pointer at that location is the pointer to the vtable.
+  if ($event->mRawPtr)
+    eventAddr = @cast(&$event, "be_a_pptr", "<be_a_ptr.h>")[0];
+  else
+    eventAddr = 0;
+
+  data = sprintf("\"scriptName\":\":!vt:%x\",\"scriptLine\":0", eventAddr);
+  track_enter(15, data);
+}
+
+//@@file:mozilla/xpcom/threads/nsThread.cpp
+//@@method:nsThread::ProcessNextEvent
+//@@lineseek:nsThread::ProcessNextEvent(PRBool mayWait, PRBool *result)
+//@@lineseek:if (event) {
+//@@lineseek:--mRunningEvent;
+probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
+  track_leave(15, "");
+}
+
+
+// === XPConnect crossing into JS (abuse of this event)
+
+//@@file:mozilla/js/src/xpconnect/src/xpcwrappedjsclass.cpp
+//@@method:nsXPCWrappedJSClass::CallMethod
+//@@lineseek:success = js_Invoke(cx, argc, stackbase, 0);
+probe process(@@lib:bin/components/libxpconnect.so).statement(@@statement:ref) {
+  track_enter(15, "");
+}
+
+//@@file:mozilla/js/src/xpconnect/src/xpcwrappedjsclass.cpp
+//@@method:nsXPCWrappedJSClass::CallMethod
+//@@lineseek:success = js_Invoke(cx, argc, stackbase, 0);
+//@@lineseek:result = *stackbase;
+probe process(@@lib:bin/components/libxpconnect.so).statement(@@statement:ref) {
+  data = script_info_from_jsfunobj($fval);
+  track_leave(15, data);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 //// RESOURCE_DATA_RECEIVED : 16
 
@@ -265,7 +357,7 @@ probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
 //// GC_EVENT : 17
 
 probe process(@@lib:lib/libmozjs.so).function("js_GC") {
-  track_enter(17);
+  track_enter(17, "");
 }
 
 probe process(@@lib:lib/libmozjs.so).function("js_GC").return {
@@ -372,7 +464,7 @@ function script_info_from_jsfun(jsfun) {
           basename(user_string(@cast(script, "JSScript",
                                      @@lib:lib/libmozjs.so)->filename));
         jsfun_cache_line[jsfun] = @cast(script, "JSScript",
-                                        @@lib:lib/libmozjs.so)->lineno || 1;
+                                        @@lib:lib/libmozjs.so)->lineno;
       }
       else {
         jsfun_cache_filename[jsfun] = "<no script>";
@@ -385,9 +477,9 @@ function script_info_from_jsfun(jsfun) {
       jsfun_cache_line[jsfun] = 1;
     }
   }
-  return sprintf("\"callerScriptName\":\"%s\","
-                 "\"callerScriptLine\":%d,"
-                 "\"callerFunctionName\":\"%s\"",
+  return sprintf("\"scriptName\":\"%s\","
+                 "\"scriptLine\":%d,"
+                 "\"functionName\":\"%s\"",
                  jsfun_cache_filename[jsfun],
                  jsfun_cache_line[jsfun],
                  jsfun_cache_func_name[jsfun]);

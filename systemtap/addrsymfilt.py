@@ -193,6 +193,31 @@ class ProcInfo(object):
                 return binary.translateAddress(addr-range_start, offset)
         return None, None
 
+    def normalizeHexAddress(self, hexaddr, command, padding=None):
+        addr = int(hexaddr, 16)
+        symname, overshoot = self.translateAddress(addr)
+        if symname:
+            if command:
+                if command == 'vt':
+                    if symname.startswith('vtable for '):
+                        symname = symname[11:]
+                if padding:
+                    symname = symname.ljust(int(padding))
+                return symname
+            if overshoot:
+                return '%s+%x' % (symname, overshoot)
+            return symname
+        return hexaddr
+
+    full_addr_hex_re = re.compile('^:!([a-z]{2,2})(?:,(\d+))?:([0-9a-f]+)$')
+    def transformString(self, s):
+        match = self.full_addr_hex_re.match(s)
+        if match:
+            command = match.group(1)
+            padding = match.group(2)
+            hexaddr = match.group(3)
+            return self.normalizeHexAddress(hexaddr, command, padding)
+        return s
 
 
 def main(pid):
@@ -210,20 +235,7 @@ def main(pid):
         command = match.group(1)
         padding = match.group(2)
         hexaddr = match.group(3)
-        symname, overshoot = proc.translateAddress(int(hexaddr, 16))
-
-        if symname:
-            if command:
-                if command == 'vt':
-                    if symname.startswith('vtable for '):
-                        symname = symname[11:]
-                if padding:
-                    symname = symname.ljust(int(padding))
-                return symname
-            if overshoot:
-                return '%s+%x' % (symname, overshoot)
-            return symname
-        return hexaddr
+        return proc.normalizeHexAddress(hexaddr, command, padding)
 
     while not sys.stdin.closed:
         line = sys.stdin.readline()

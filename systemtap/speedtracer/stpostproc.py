@@ -11,8 +11,9 @@
 import json, os, os.path
 
 class ProcContext(object):
-    def __init__(self, srcdir):
+    def __init__(self, srcdir, procinfo):
         self.srcdir = srcdir
+        self.procinfo = procinfo
 
         self.outdir = os.path.join(srcdir, 'out')
         if not os.path.exists(self.outdir):
@@ -65,6 +66,22 @@ class ThreadProc(object):
         obj['time'] = obj['time'] * 0.000001
         obj['duration'] = obj['duration'] * 0.000001
 
+        data = obj['data']
+        # - perform address translation on potentially affected fields
+        if 'scriptName' in data and data['scriptName'].startswith(':!'):
+            data['scriptName'] = \
+                self.context.procinfo.transformString(data['scriptName'])
+        if ('callerScriptName' in data and
+                data['callerScriptName'].startswith(':!')):
+            data['callerScriptName'] = \
+                self.context.procinfo.transformString(data['callerScriptName'])
+
+        # - create a stack frame so we can fit the function name in...
+        if 'functionName' in data:
+            data['backTrace'] = 'blah,"%s",%d,1,"","%s"' % (
+                data.get('scriptName', ''), data.get('scriptLine', 0),
+                data.get('functionName', ''))
+
         # - add fields...
         obj['children'] = ()
         
@@ -97,29 +114,34 @@ class ThreadProc(object):
 
 
 class Processor(object):
-    def process(self, srcdir, streamer):
+    def process(self, srcdir, streamer, procinfo):
         '''
         Each thread handles its own processing; we just need to create them
         as needed and close them out when we run out of events.
         '''
-        context = ProcContext(srcdir)
+        context = ProcContext(srcdir, procinfo)
 
         thread_procs = {}
 
         # eat the lines
-        for line in streamer:
-            if line[0] != '{':
-                print 'Ignoring line:', line.rstrip()
-                continue
-            obj = json.loads(line)
+        for blob in streamer:
+            for line in blob.splitlines():
+                if line[0] != '{':
+                    print 'Ignoring line:', line.rstrip()
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception, e:
+                    print 'BIG TROUBLE IN LITTLE STRING:', line
+                    raise e
 
-            tid = obj['tid']
-            if tid in thread_procs:
-                tproc = thread_procs[tid]
-            else:
-                tproc = thread_procs[tid] = ThreadProc(context, tid)
+                tid = obj['tid']
+                if tid in thread_procs:
+                    tproc = thread_procs[tid]
+                else:
+                    tproc = thread_procs[tid] = ThreadProc(context, tid)
 
-            tproc.chew(obj)
+                tproc.chew(obj)
 
         # tell the thread procs we have no more lines
         for tproc in thread_procs.values():
