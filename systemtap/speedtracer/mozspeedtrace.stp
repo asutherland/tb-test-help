@@ -131,7 +131,7 @@ probe begin {
 function track_enter(eventCode) {
   now = gettimeofday_ns();
   ctx = tid();
-  seq = tc_seq[ctx]++;
+  seq = t_seq[ctx]++;
   depth = t_depth[ctx]++;
 
   td_seq[ctx, depth] = seq;
@@ -163,12 +163,12 @@ function track_leave(eventCode) {
 ////////////////////////////////////////////////////////////////////////////////
 //// LAYOUT : 1
 
-probe process(@@file:bin/components/libgklayout.so).function("PresShell::DoReflow") {
+probe process(@@lib:bin/components/libgklayout.so).function("PresShell::DoReflow") {
   track_enter(1);
 }
 
 // returns false when interrupted, true when completed
-probe process(@@file:bin/components/libgklayout.so).function("PresShell::DoReflow").return {
+probe process(@@lib:bin/components/libgklayout.so).function("PresShell::DoReflow").return {
   track_leave(1);
 }
 

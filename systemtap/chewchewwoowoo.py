@@ -23,7 +23,7 @@
 #  both invoke that file as well as produce a systemtap script that could be
 #  used by others without this script.
 
-import optparse, os.path, re, subprocess, sys
+import optparse, os.path, re, shutil, subprocess, sys, time
 
 class ChewContext(object):
     '''
@@ -33,7 +33,7 @@ class ChewContext(object):
     happy.
     '''
     def __init__(self):
-        raise Error("I currently cannot be directly instantiated!")
+        raise Exception("I currently cannot be directly instantiated!")
 
     def find_source_file(self, pathish):
         '''
@@ -44,7 +44,7 @@ class ChewContext(object):
         # it's a given this is not windows. calm down!
         vpart, rpart = pathish.split('/', 1)
         if not vpart in self.src_vpaths:
-            raise Error("'%s' is not a valid vpath root!" % (vpart,))
+            raise Exception("'%s' is not a valid vpath root!" % (vpart,))
         return os.path.join(self.src_vpaths[vpart], rpart)
 
     def find_lib_file(self, pathish):
@@ -54,13 +54,13 @@ class ChewContext(object):
         '''
         return os.path.join(self.lib_root_path, pathish)
 
-class MozChewContext(object):
+class MozChewContext(ChewContext):
     '''
     Keep the mozilla (well, really, Thunderbird) decisions in here.
     '''
     def __init__(self, objdir, srcdir=None):
         if not os.path.isdir(objdir):
-            raise Error("objdir %s does not exist!" % (objdir,))
+            raise Exception("objdir %s does not exist!" % (objdir,))
 
         # -- Binaries
 
@@ -77,7 +77,7 @@ class MozChewContext(object):
         if srcdir is None:
             srcdir = os.path.dirname(objdir)
         elif not os.path.isdir(srcdir):
-            raise Error("srcdir '%s' does not exist!" % (srcdir,))
+            raise Exception("srcdir '%s' does not exist!" % (srcdir,))
         moz_srcdir_root = os.path.join(srcdir, 'mozilla')
         if not os.path.isdir(moz_srcdir_root):
             self.src_vpaths = {'mozilla': srcdir}
@@ -137,7 +137,7 @@ class ScriptChewer(object):
         '''
         path = self.context.find_source_file(val)
         if not os.path.isfile(path):
-            raise Error("vpath '%s' does not exist!" % (val,))
+            raise Exception("vpath '%s' does not exist!" % (val,))
 
         if self.cached_file_path != path:
             self.cached_file_path = path
@@ -156,7 +156,7 @@ class ScriptChewer(object):
 
     def _stmt_lineseek(self, val):
         if self.cached_file_lines is None:
-            raise Error('No current file lines to process @@lineseek')
+            raise Exception('No current file lines to process @@lineseek')
 
         if self.src_line is not None:
             # start on the line after our last match
@@ -167,13 +167,15 @@ class ScriptChewer(object):
 
         for iLine in range(startLine, len(lines)):
             line = lines[iLine]
-            if line.lstrip() == val:
+            if line.strip() == val:
                 # results are 1-based, of course.
                 self.src_line = iLine + 1
                 return
 
-        raise Error(("Unable to locate line with contents '%s' starting " +
-                     "from line %d.") % (val, startLine+1))
+        raise Exception(
+            ("Unable to locate line with contents '%s' starting " +
+             "from line %d in file %s.") %
+            (val, startLine+1, self.src_file_name))
         
         
     def _expr_statement(self, val):
@@ -184,9 +186,9 @@ class ScriptChewer(object):
         "METHOD@FILE:LINESEEK", with one specific example resulting in:
         "nsThread::ProcessNextEvent@nsThread.cpp:527"
         '''
-        return "%s@%s:%d" % (self.method_name,
-                             self.src_file_name, 
-                             self.src_line)
+        return '"%s@%s:%d"' % (self.method_name,
+                               self.src_file_name, 
+                               self.src_line)
 
 
     def _expr_lib(self, val):
@@ -207,8 +209,8 @@ class ScriptChewer(object):
     def chew_script(self, path):
         expr_re = re.compile(r'\(@@([^:]+):([^\)]+)\)')
         def expr_helper(match):
-            exprfunc = getattr(self, '_expr_%s' % (match.groups(1)))
-            return exprfunc(match.groups(2))
+            exprfunc = getattr(self, '_expr_%s' % (match.group(1),))
+            return '(%s)' % (exprfunc(match.group(2)),)
 
         out_lines = self.out_lines = []
 
@@ -217,15 +219,16 @@ class ScriptChewer(object):
         for line in f:
             # statement?
             if line.startswith('//@@'):
-                out_lines.push(out_lines)
+                out_lines.append(line)
                 idxColon = line.find(':', 4)
                 if idxColon != -1:
                     key = line[4:idxColon]
-                    val = line[idxColon+1:]
+                    # there's a newline...
+                    val = line.rstrip()[idxColon+1:]
                     stmtfunc = getattr(self, '_stmt_%s' % (key,))
                     stmtfunc(val)
             else:
-                out_lines.push(expr_re.sub(expr_helper, line))
+                out_lines.append(expr_re.sub(expr_helper, line))
         f.close()
 
     def maybe_write_script(self, out_path):
@@ -237,7 +240,7 @@ class ScriptChewer(object):
         Return True if we wrote the script, False if we did not need to.
         '''
         if self.script_src_path == out_path:
-            raise Error("You are trying to overwrite the source file!!")
+            raise Exception("You are trying to overwrite the source file!!")
         
         if os.path.isfile(out_path):
             f = open(out_path, 'r')
@@ -246,7 +249,8 @@ class ScriptChewer(object):
         else:
             cur_contents = ''
 
-        out_str = '\n'.join(self.out_lines)
+        # out_lines have newlines on them
+        out_str = ''.join(self.out_lines)
         wrote_it = False
         if out_str != cur_contents:
             f = open(out_path, 'w')
@@ -298,10 +302,6 @@ class MozMain(object):
         # put our built script in the objdir...
         built_tapscript = os.path.join(objdir, os.path.basename(tapscript))
 
-        # we need a temporary directory to hold our data for this invocation
-        tmp_dir = '/tmp/chewtap-%d' % (pid,)
-        os.mkdir(tmp_dir)
-
         # -- BUILD the tapscript
         context = MozChewContext(objdir)
         chewer = ScriptChewer(context)
@@ -309,6 +309,12 @@ class MozMain(object):
         chewer.maybe_write_script(built_tapscript)
 
         # -- FETCH required data about the running process.
+        # we need a temporary directory to hold our data for this invocation
+        tmp_dir = '/tmp/chewtap-%d' % (pid,)
+        if os.path.exists(tmp_dir):
+            tmp_dir += '-%d' % (int(time.time()),)
+        os.mkdir(tmp_dir)
+
         # we need the proc maps files to convert pointers
         shutil.copyfile(os.path.join(proc_dir, 'maps'),
                         os.path.join(tmp_dir, 'maps'))
@@ -320,7 +326,7 @@ class MozMain(object):
         # the script tells us what arguments it wants
         args.extend(chewer.stap_args)
         if '-b' in chewer.stap_args:
-            args.push('-o %s' % (os.path.join(tmp_dir), 'bulk'),)
+            args.append('-o %s' % (os.path.join(tmp_dir, 'bulk'),))
         # the built script
         args.append(built_tapscript)
         # the library paths
