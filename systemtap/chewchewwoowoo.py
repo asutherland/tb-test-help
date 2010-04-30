@@ -416,7 +416,7 @@ class MozMain(object):
         # -- RUN systemtap
         # - build args
         # assume the user is in the stapdev group
-        args = ['/usr/bin/stap']
+        args = ['/usr/bin/stap', '-x', '%d' % (pid,)]
         # the script tells us what arguments it wants
         args.extend(chewer.stap_args)
         if '-b' in chewer.stap_args:

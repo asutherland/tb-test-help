@@ -1,7 +1,14 @@
 /* *****************************************************************************
  * OVERVIEW
  *
- * Generate GWT Speed Tracer-ish JSON output from the mozilla-1.9.2 platform.
+ * Generate performance (time + memory usage) JSON output from the mozilla-1.9.2
+ *  platform.  This used to be biased to produce GWT Speed Tracer output but
+ *  that was abandoned when it became clear that our purposes were not aligned
+ *  with its purpose.  I'll try and keep things aligned until there are reasons
+ *  to not be aligned.
+ *
+ * For as long as we are sorta Speed Tracer aligned, the following links may be
+ *  useful:
  *
  * The end-form data dump format documentation required by Speed Tracer is here:
  * http://code.google.com/webtoolkit/speedtracer/data-dump-format.html
@@ -9,22 +16,10 @@
  * General Speed Tracer documentation is here:
  * http://code.google.com/webtoolkit/speedtracer/
  *
- * invoke like so:
- *  sudo stap -g -DMAXSTRINGLEN=1024 moz-alloc-track.st /path/to/libmozjs.so
- *
- * then post-process like so:
- *
  * The key stap arguments mean:
- * - "-g" allows us to use embedded C code
- * - "-DMAXSTRINGLEN=1024" allows us to process really long strings albeit with
- *    some potential memory bloat.
- * - "-b" enables bulk mode transmission of data which means greatly reduced
- *    userspace crossings (I think... we'll see! :).
- * - "-sNUM" NUM megabyte per-cpu buffers for bulk transfer
- * - "-o FILE" names bulk transfer files FILE_cpu.
  *
- * This file is made available under the GPLv3 license; its outputs are not
- *  covered by the license; they are yours for the taking!
+ * This file is made available under the standard MPL1.1/GPL2/LGPL2.1 license.
+ *  Its output are not covered by the license; they are yours for the taking!
  *
  * Copyright 2010, the Mozilla Foundation.
  * Andrew Sutherland <asutherland@asutherland.org>
@@ -106,9 +101,16 @@
  *    not clear how the UI would surface them anyways?  I'll look into this when
  *    it comes time to attribute memory usage.
  */
-// -b implies an -o option...
 //@@stapargs:-g,-DMAXSTRINGLEN=1024,-b,-s2
-//@@postprocess:stpostproc
+// "-g" allows us to use embedded C code
+// "-DMAXSTRINGLEN=1024" allows us to process really long strings albeit with
+//    some potential memory bloat.
+// "-b" enables bulk mode transmission of data which means greatly reduced
+//    userspace crossings (I think... we'll see! :).  Our driver automatically
+//    adds an "-o" option.
+// "-sNUM" NUM megabyte per-cpu buffers for bulk transfer
+
+//@@postprocess:perfishpostproc
 
 ////////////////////////////////////////////////////////////////////////////////
 //////// Shared State
@@ -150,11 +152,359 @@ function track_leave(eventCode, data) {
   //printf("exit: %d @ %d ... %s\n", eventCode, depth, data);
 
   printf("{\"tid\":%d,\"depth\":%d,\"type\":%d,"
-         "\"time\":%d,\"duration\":%d,\"data\":{%s%s}}\n",
+         "\"time\":%d,\"duration\":%d,\"data\":{%s%s},\"mem\":{",
          ctx, depth, eventCode,
          start - dawn_of_time, duration, pre_data, data);
+  mem_stats_data_string(ctx, depth);
+  printf("}}\n");
 }
 
+
+////////////////////////////////////////////////////////////////////////////////
+//////// Memory Allocation Stuff
+
+/*
+ * The goals for tracking memory allocation are:
+ * - Attribute memory activity to the containing event (or gaps when there is
+ *    no active event.)
+ * - Track general statistics for all (de)allocations; we want to know how
+ *    many allocations occurred, how many frees occurred, and how many bytes
+ *    were involved for each.  We want to be able to observe when death by
+ *    paper cuts is happening for small and medium allocations.  For huge
+ *    allocations we will be tracking their full life cycles, but it's nice to
+ *    have the uniform presentation here too (and perhaps be able to turn off
+ *    life-cycle.)
+ * - Generate explicit events for all huge allocations (1 MiB and larger per
+ *    jemalloc and us) so that we can directly track their life-cycles.
+ * - reallocations are only really interesting 
+ *
+ * Here's the memory allocation scam:
+ *
+ *
+ *
+ * We maintain counters for count and total allocation size for a few different
+ *  types of allocations for smaller allocations.  For larger allocations we
+ *  emit their own JSON records so we can explicitly trace their life-cycle.
+ *
+ * kernel:
+ * 0x0: mmap/munmap
+ *
+ * jemalloc:
+ * 0x10: small
+ * 0x11: large
+ * 0x12: huge
+ *
+ * JS:
+ * 0x40: object
+ * 0x41: string
+ * 0x42: function
+ * 0x43: xml
+ */
+
+/** maps [thread, depth, kind] to alloc count */
+global tdk_mem_alloc_count;
+/** maps [thread, depth, kind] to alloc byte tally */
+global tdk_mem_alloc_bytes;
+/** maps [thread, depth, kind] to realloc count */
+global tdk_mem_realloc_count;
+/** maps [thread, depth, kind] to realloc growth bytes */
+global tdk_mem_realloc_bytes_growth;
+/** maps [thread, depth, kind] to realloc shrink bytes */
+global tdk_mem_realloc_bytes_shrink;
+/** maps [thread, depth, kind] to free count */
+global tdk_mem_free_count;
+/** maps [thread, depth, kind] to free byte tally */
+global tdk_mem_free_bytes;
+
+function mem_stats_data_string(ctx, depth_idx) {
+  // alloc
+  if (tdk_mem_alloc_count[ctx, depth_idx, 0x0]) {
+    printf("\"kernel_alloc\":[%d,%d],",
+           tdk_mem_alloc_count[ctx, depth_idx, 0x0],
+           tdk_mem_alloc_bytes[ctx, depth_idx, 0x0]);
+    tdk_mem_alloc_count[ctx, depth_idx, 0x0] = 0;
+    tdk_mem_alloc_bytes[ctx, depth_idx, 0x0] = 0;
+  }
+  if (tdk_mem_alloc_count[ctx, depth_idx, 0x10]) {
+    printf("\"je_small_alloc\":[%d,%d],",
+           tdk_mem_alloc_count[ctx, depth_idx, 0x10],
+           tdk_mem_alloc_bytes[ctx, depth_idx, 0x10]);
+    tdk_mem_alloc_count[ctx, depth_idx, 0x10] = 0;
+    tdk_mem_alloc_bytes[ctx, depth_idx, 0x10] = 0;
+  }
+  if (tdk_mem_alloc_count[ctx, depth_idx, 0x11]) {
+    printf("\"je_large_alloc\":[%d,%d],",
+           tdk_mem_alloc_count[ctx, depth_idx, 0x11],
+           tdk_mem_alloc_bytes[ctx, depth_idx, 0x11]);
+    tdk_mem_alloc_count[ctx, depth_idx, 0x11] = 0;
+    tdk_mem_alloc_bytes[ctx, depth_idx, 0x11] = 0;
+  }
+  if (tdk_mem_alloc_count[ctx, depth_idx, 0x12]) {
+    printf("\"je_huge_alloc\":[%d,%d],",
+           tdk_mem_alloc_count[ctx, depth_idx, 0x12],
+           tdk_mem_alloc_bytes[ctx, depth_idx, 0x12]);
+    tdk_mem_alloc_count[ctx, depth_idx, 0x12] = 0;
+    tdk_mem_alloc_bytes[ctx, depth_idx, 0x12] = 0;
+  }
+
+  // realloc
+  if (tdk_mem_realloc_count[ctx, depth_idx, 0x1]) {
+    printf("\"je_realloc\":[%d,%d,%d],",
+           tdk_mem_realloc_count[ctx, depth_idx, 0x1],
+           tdk_mem_realloc_bytes_growth[ctx, depth_idx, 0x1],
+           tdk_mem_realloc_bytes_shrink[ctx, depth_idx, 0x1]);
+    tdk_mem_realloc_count[ctx, depth_idx, 0x1] = 0;
+    tdk_mem_realloc_bytes_growth[ctx, depth_idx, 0x1] = 0;
+    tdk_mem_realloc_bytes_shrink[ctx, depth_idx, 0x1] = 0;
+  }
+  
+  // free
+  if (tdk_mem_free_count[ctx, depth_idx, 0x0]) {
+    printf("\"kernel_free\":[%d,%d],",
+           tdk_mem_free_count[ctx, depth_idx, 0x0],
+           tdk_mem_free_bytes[ctx, depth_idx, 0x0]);
+    tdk_mem_free_count[ctx, depth_idx, 0x0] = 0;
+    tdk_mem_free_bytes[ctx, depth_idx, 0x0] = 0;
+  }
+  if (tdk_mem_free_count[ctx, depth_idx, 0x10]) {
+    printf("\"je_small_free\":[%d,%d],",
+           tdk_mem_free_count[ctx, depth_idx, 0x10],
+           tdk_mem_free_bytes[ctx, depth_idx, 0x10]);
+    tdk_mem_free_count[ctx, depth_idx, 0x10] = 0;
+    tdk_mem_free_bytes[ctx, depth_idx, 0x10] = 0;
+  }
+  if (tdk_mem_free_count[ctx, depth_idx, 0x11]) {
+    printf("\"je_large_free\":[%d,%d],",
+           tdk_mem_free_count[ctx, depth_idx, 0x11],
+           tdk_mem_free_bytes[ctx, depth_idx, 0x11]);
+    tdk_mem_free_count[ctx, depth_idx, 0x11] = 0;
+    tdk_mem_free_bytes[ctx, depth_idx, 0x11] = 0;
+  }
+  if (tdk_mem_free_count[ctx, depth_idx, 0x12]) {
+    printf("\"je_huge_free\":[%d,%d],",
+           tdk_mem_free_count[ctx, depth_idx, 0x12],
+           tdk_mem_free_bytes[ctx, depth_idx, 0x12]);
+    tdk_mem_free_count[ctx, depth_idx, 0x12] = 0;
+    tdk_mem_free_bytes[ctx, depth_idx, 0x12] = 0;
+  }
+}
+
+function mem_stats_track_alloc(kind, size) {
+  ctx = tid();
+  depth_idx = t_depth[ctx] - 1;
+
+  tdk_mem_alloc_count[ctx, depth_idx, kind]++;
+  tdk_mem_alloc_bytes[ctx, depth_idx, kind] += size;
+}
+
+function mem_stats_track_realloc(kind, oldsize, size) {
+  ctx = tid();
+  depth_idx = t_depth[ctx] - 1;
+  delta = size - oldsize;
+
+  tdk_mem_realloc_count[ctx, depth_idx, kind]++;
+  if (delta > 0)
+    tdk_mem_realloc_bytes_growth[ctx, depth_idx, kind] += delta;
+  else
+    tdk_mem_realloc_bytes_shrink[ctx, depth_idx, kind] += delta;
+}
+
+function mem_stats_track_free(kind, size) {
+  ctx = tid();
+  depth_idx = t_depth[ctx] - 1;
+
+  tdk_mem_free_count[ctx, depth_idx, kind]++;
+  tdk_mem_free_bytes[ctx, depth_idx, kind] += size;
+}
+
+function mem_life_cycle_alloc(kind, ptr, size) {
+  now = gettimeofday_ns();
+  ctx = tid();
+  depth = t_depth[ctx];
+
+  printf("{\"tid\":%d,\"depth\":%d,\"mtype\":\"alloc\","
+         "\"time\":%d,\"data\":{\"source\":%d,\"ptr\":%d,\"size\":%d}}\n",
+         ctx, depth,
+         now - dawn_of_time, kind, ptr, size);
+}
+
+function mem_life_cycle_realloc(kind, oldptr, newptr, oldsize, newsize) {
+  now = gettimeofday_ns();
+  ctx = tid();
+  depth = t_depth[ctx];
+
+  printf("{\"tid\":%d,\"depth\":%d,\"mtype\":\"realloc\","
+         "\"time\":%d,\"data\":{\"source\":%d,\"oldptr\":%d,\"newptr\":%d,"
+         "\"oldsize\":%d,\"newsize\":%d}}\n",
+         ctx, depth,
+         now - dawn_of_time, kind, oldptr, newptr, oldsize, newsize);
+}
+
+function mem_life_cycle_free(kind, ptr, size) {
+  now = gettimeofday_ns();
+  ctx = tid();
+  depth = t_depth[ctx];
+
+  printf("{\"tid\":%d,\"depth\":%d,\"mtype\":\"free\","
+         "\"time\":%d,\"data\":{\"source\":%d,\"ptr\":%d,\"size\":%d}}\n",
+         ctx, depth,
+         now - dawn_of_time, kind, ptr, size);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+//// kernel
+
+// the vm.mmap point wants do_mmap/do_mmap2 which we cannot have...
+probe kernel.function("do_mmap_pgoff") {
+  if (pid() != target())
+    next;
+
+  address = $addr;
+  length = $len;
+  mem_stats_track_alloc(0x0, length);
+  mem_life_cycle_alloc(0x0, address, length);
+}
+
+probe vm.munmap {
+  if (pid() != target())
+    next;
+
+  mem_stats_track_free(0x0, length);
+  mem_life_cycle_free(0x0, address, length);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//// jemalloc
+
+// jemalloc gets linked into thunderbird-bin proper
+// the following are defined in terms of other exposed operations:
+// - posix_memalign in terms of memalign
+// - valign in terms of memalign
+
+// arena_malloc_small
+// arena_malloc_large
+// huge_malloc
+
+// ???
+// arena_palloc, huge_palloc
+
+// arena_ralloc
+// huge_ralloc
+
+// arena_dalloc_small
+// arena_dalloc_large
+// huge_dalloc
+
+
+
+//// alloc
+
+//@@file:mozilla/memory/jemalloc/jemalloc.c
+//@@method:arena_malloc_small
+//@@lineseek:arena_malloc_small(arena_t *arena, size_t size, bool zero)
+//@@lineseek:if (ret == NULL) {
+probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+  mem_stats_track_alloc(0x10, $size);
+}
+
+//@@file:mozilla/memory/jemalloc/jemalloc.c
+//@@method:arena_malloc_large
+//@@lineseek:arena_malloc_large(arena_t *arena, size_t size, bool zero)
+//@@lineseek:if (ret == NULL) {
+probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+  mem_stats_track_alloc(0x11, $size);
+}
+
+//@@file:mozilla/memory/jemalloc/jemalloc.c
+//@@method:huge_malloc
+//@@lineseek:huge_malloc(size_t size, bool zero)
+//@@lineseek:if (ret == NULL) {
+probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+  size = $size;
+  mem_stats_track_alloc(0x12, size);
+  mem_life_cycle_alloc(0x12, $ret, size);
+}
+
+//// realloc
+
+//@@file:mozilla/memory/jemalloc/jemalloc.c
+//@@method:iralloc
+//@@lineseek:iralloc(void *ptr, size_t size)
+//@@lineseek:if (size <= arena_maxclass)
+probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+  mem_stats_track_realloc(0x1, $oldsize, $size);
+}
+
+//@@file:mozilla/memory/jemalloc/jemalloc.c
+//@@method:huge_ralloc
+//@@lineseek:huge_ralloc(void *ptr, size_t size, size_t oldsize)
+//@@lineseek:if (ret == NULL)
+probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+  mem_life_cycle_realloc(0x12, $ptr, $ret, $oldsize, $size);
+}
+
+
+//// free
+
+//@@file:mozilla/memory/jemalloc/jemalloc.c
+//@@method:arena_dalloc_small
+//@@lineseek:arena_dalloc_small(arena_t *arena, arena_chunk_t *chunk, void *ptr,
+//@@lineseek:arena_run_reg_dalloc(run, bin, ptr, size);
+probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+  mem_stats_track_free(0x10, $size);
+}
+
+//@@file:mozilla/memory/jemalloc/jemalloc.c
+//@@method:arena_dalloc_large
+//@@lineseek:arena_dalloc_large(arena_t *arena, arena_chunk_t *chunk, void *ptr)
+// MALLOC_STATS is always defined for us, so this line will always be available
+//@@lineseek:if (opt_junk)
+probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+  mem_stats_track_free(0x11, $size);
+}
+
+//@@file:mozilla/memory/jemalloc/jemalloc.c
+//@@method:huge_dalloc
+//@@lineseek:huge_dalloc(void *ptr)
+//@@lineseek:extent_tree_ad_remove(&huge, node);
+probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+  size = $node->size;
+  mem_stats_track_free(0x12, size);
+  mem_life_cycle_free(0x12, $ptr, size);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+//// JavaScript
+
+/*
+ * SpiderMonkey uses arenas.
+ */
+
+/*
+probe process(@@lib:lib/libmozjs.so).function("NewGCArena") {
+}
+*/
+
+/*
+ * There's a NewGCThing<T> template that we could probably wildcard, but the
+ *  apparent use count is low enough it seems worth it to specialize here...
+ */
+
+/*
+probe process(@@lib:lib/libmozjs.so).function("js_NewGCObject") {
+}
+
+probe process(@@lib:lib/libmozjs.so).function("js_NewGCString") {
+}
+
+probe process(@@lib:lib/libmozjs.so).function("js_NewGCFunction") {
+}
+
+probe process(@@lib:lib/libmozjs.so).function("js_NewGCXML") {
+}
+*/
 
 ////////////////////////////////////////////////////////////////////////////////
 //////// Browser Timeline Events
