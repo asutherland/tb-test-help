@@ -133,6 +133,18 @@ function track_enter(eventCode, pre_data) {
   ctx = tid();
   depth = t_depth[ctx]++;
 
+  // if we are depth 0, handle inter-event stuff...
+  if ((depth == 0) && td_any_alloc[ctx, -1]) {
+    printf("{\"tid\":%d,\"depth\":null,\"type\":null,"
+           "\"mem\":{",
+           ctx);
+    mem_stats_data_string(ctx, -1);
+    printf("}}\n");
+    td_any_alloc[ctx, -1] = 0;
+  }
+  // clear the memory tracking for this context/depth
+  td_any_alloc[ctx, depth] = 0;
+
   td_start[ctx, depth] = now;
   td_pre_data[ctx, depth] = pre_data;
 
@@ -144,19 +156,26 @@ function track_leave(eventCode, data) {
   ctx = tid();
   depth = --t_depth[ctx];
 
-  start = td_start[ctx, depth];
-  pre_data = td_pre_data[ctx, depth];
+  // fix-up and bail if we were just catching the tail end of an event
+  if (depth < 0) {
+    t_depth[ctx] = 0;
+  }
+  else {
+    start = td_start[ctx, depth];
+    pre_data = td_pre_data[ctx, depth];
 
-  duration = now - start;
+    duration = now - start;
 
-  //printf("exit: %d @ %d ... %s\n", eventCode, depth, data);
+    //printf("exit: %d @ %d ... %s\n", eventCode, depth, data);
 
-  printf("{\"tid\":%d,\"depth\":%d,\"type\":%d,"
-         "\"time\":%d,\"duration\":%d,\"data\":{%s%s},\"mem\":{",
-         ctx, depth, eventCode,
-         start - dawn_of_time, duration, pre_data, data);
-  mem_stats_data_string(ctx, depth);
-  printf("}}\n");
+    printf("{\"tid\":%d,\"depth\":%d,\"type\":%d,"
+           "\"time\":%d,\"duration\":%d,\"data\":{%s%s},\"mem\":{",
+           ctx, depth, eventCode,
+           start - dawn_of_time, duration, pre_data, data);
+    if (td_any_alloc[ctx, depth])
+      mem_stats_data_string(ctx, depth);
+    printf("}}\n");
+  }
 }
 
 
@@ -201,6 +220,8 @@ function track_leave(eventCode, data) {
  * 0x43: xml
  */
 
+/** mapps [thread, depth] to whether any alloc happened */
+global td_any_alloc;
 /** maps [thread, depth, kind] to alloc count */
 global tdk_mem_alloc_count;
 /** maps [thread, depth, kind] to alloc byte tally */
@@ -293,6 +314,7 @@ function mem_stats_track_alloc(kind, size) {
   ctx = tid();
   depth_idx = t_depth[ctx] - 1;
 
+  td_any_alloc[ctx, depth_idx] = 1;
   tdk_mem_alloc_count[ctx, depth_idx, kind]++;
   tdk_mem_alloc_bytes[ctx, depth_idx, kind] += size;
 }
@@ -302,6 +324,7 @@ function mem_stats_track_realloc(kind, oldsize, size) {
   depth_idx = t_depth[ctx] - 1;
   delta = size - oldsize;
 
+  td_any_alloc[ctx, depth_idx] = 1;
   tdk_mem_realloc_count[ctx, depth_idx, kind]++;
   if (delta > 0)
     tdk_mem_realloc_bytes_growth[ctx, depth_idx, kind] += delta;
@@ -313,6 +336,7 @@ function mem_stats_track_free(kind, size) {
   ctx = tid();
   depth_idx = t_depth[ctx] - 1;
 
+  td_any_alloc[ctx, depth_idx] = 1;
   tdk_mem_free_count[ctx, depth_idx, kind]++;
   tdk_mem_free_bytes[ctx, depth_idx, kind] += size;
 }
@@ -355,6 +379,8 @@ function mem_life_cycle_free(kind, ptr, size) {
 ////////////////////////////////////////////////////////////////////////////////
 //// kernel
 
+// too expensive!!
+/*
 // the vm.mmap point wants do_mmap/do_mmap2 which we cannot have...
 probe kernel.function("do_mmap_pgoff") {
   if (pid() != target())
@@ -373,6 +399,7 @@ probe vm.munmap {
   mem_stats_track_free(0x0, length);
   mem_life_cycle_free(0x0, address, length);
 }
+*/
 
 ////////////////////////////////////////////////////////////////////////////////
 //// jemalloc
@@ -459,7 +486,7 @@ probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
 //@@method:arena_dalloc_large
 //@@lineseek:arena_dalloc_large(arena_t *arena, arena_chunk_t *chunk, void *ptr)
 // MALLOC_STATS is always defined for us, so this line will always be available
-//@@lineseek:if (opt_junk)
+//@@lineseek:arena->stats.allocated_large -= size;
 probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
   mem_stats_track_free(0x11, $size);
 }
@@ -542,6 +569,19 @@ probe process(@@lib:bin/components/libgklayout.so).function("nsCSSFrameConstruct
 
 ////////////////////////////////////////////////////////////////////////////////
 //// PAINT : 3
+
+probe process(@@lib:bin/components/libgklayout.so).function("PresShell::Paint") {
+  data = sprintf("\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d",
+                 $aDirtyRegion->mBoundRect->x, $aDirtyRegion->mBoundRect->y,
+                 $aDirtyRegion->mBoundRect->width,
+                 $aDirtyRegion->mBoundRect->height);
+  track_enter(3, data);
+}
+
+// returns false when interrupted, true when completed
+probe process(@@lib:bin/components/libgklayout.so).function("PresShell::Paint").return {
+  track_leave(3, "");
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 //// PARSE_HTML : 4
@@ -654,52 +694,6 @@ probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
 ////////////////////////////////////////////////////////////////////////////////
 //// JAVASCRIPT_CALLBACK : 15
 
-// === Event Loop (abuse of this event)
-
-//@@file:mozilla/xpcom/threads/nsThread.cpp
-//@@method:nsThread::ProcessNextEvent
-//@@lineseek:nsThread::ProcessNextEvent(PRBool mayWait, PRBool *result)
-//@@lineseek:if (event) {
-probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
-  // $event->mRawPtr's value is the address of an instance on the heap
-  // The first pointer at that location is the pointer to the vtable.
-  if ($event->mRawPtr)
-    eventAddr = @cast(&$event, "be_a_pptr", "<be_a_ptr.h>")[0];
-  else
-    eventAddr = 0;
-
-  data = sprintf("\"scriptName\":\":!vt:%x\",\"scriptLine\":0", eventAddr);
-  track_enter(15, data);
-}
-
-//@@file:mozilla/xpcom/threads/nsThread.cpp
-//@@method:nsThread::ProcessNextEvent
-//@@lineseek:nsThread::ProcessNextEvent(PRBool mayWait, PRBool *result)
-//@@lineseek:if (event) {
-//@@lineseek:--mRunningEvent;
-probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
-  track_leave(15, "");
-}
-
-
-// === XPConnect crossing into JS (abuse of this event)
-
-//@@file:mozilla/js/src/xpconnect/src/xpcwrappedjsclass.cpp
-//@@method:nsXPCWrappedJSClass::CallMethod
-//@@lineseek:success = js_Invoke(cx, argc, stackbase, 0);
-probe process(@@lib:bin/components/libxpconnect.so).statement(@@statement:ref) {
-  track_enter(15, "");
-}
-
-//@@file:mozilla/js/src/xpconnect/src/xpcwrappedjsclass.cpp
-//@@method:nsXPCWrappedJSClass::CallMethod
-//@@lineseek:success = js_Invoke(cx, argc, stackbase, 0);
-//@@lineseek:result = *stackbase;
-probe process(@@lib:bin/components/libxpconnect.so).statement(@@statement:ref) {
-  data = script_info_from_jsfunobj($fval);
-  track_leave(15, data);
-}
-
 ////////////////////////////////////////////////////////////////////////////////
 //// RESOURCE_DATA_RECEIVED : 16
 
@@ -734,6 +728,124 @@ probe process(@@lib:lib/libmozjs.so).function("js_GC").return {
 //// PROFILE_DATA : 0x7f ff ff fc
 
 // The documentation really cops out here (but avoids calling attention to it :)
+
+
+////////////////////////////////////////////////////////////////////////////////
+//////// Mozilla Made-Up Events
+
+////////////////////////////////////////////////////////////////////////////////
+//// Event Loop : 0x1000
+
+//@@file:mozilla/xpcom/threads/nsThread.cpp
+//@@method:nsThread::ProcessNextEvent
+//@@lineseek:nsThread::ProcessNextEvent(PRBool mayWait, PRBool *result)
+//@@lineseek:if (event) {
+probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
+  // $event->mRawPtr's value is the address of an instance on the heap
+  // The first pointer at that location is the pointer to the vtable.
+  if ($event->mRawPtr)
+    eventAddr = @cast(&$event, "be_a_pptr", "<be_a_ptr.h>")[0];
+  else
+    eventAddr = 0;
+
+  data = sprintf("\"scriptName\":\":!vt:%x\",\"scriptLine\":0", eventAddr);
+  track_enter(0x1000, data);
+}
+
+//@@file:mozilla/xpcom/threads/nsThread.cpp
+//@@method:nsThread::ProcessNextEvent
+//@@lineseek:nsThread::ProcessNextEvent(PRBool mayWait, PRBool *result)
+//@@lineseek:if (event) {
+//@@lineseek:--mRunningEvent;
+probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
+  track_leave(0x1000, "");
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+//// InputStreamReadyEvent : 0x1020
+
+probe process(@@lib:lib/libxpcom_core.so).function("nsInputStreamReadyEvent::Run") {
+  // $mCallback->mRawPtr's value is the address of an instance on the heap
+  // The first pointer at that location is the pointer to the vtable.
+  callbackAddr = @cast(&$this->mCallback, "be_a_pptr", "<be_a_ptr.h>")[0];
+
+  data = sprintf("\"scriptName\":\":!vt:%x\"", callbackAddr);
+  track_enter(0x1020, data);
+}
+
+probe process(@@lib:lib/libxpcom_core.so).function("nsInputStreamReadyEvent::Run").return {
+  track_leave(0x1020, "");
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+//// nsInputStreamPump::OnInputStreamReady : 0x1021
+
+//@@file:mozilla/netwerk/base/src/nsInputStreamPump.cpp
+//@@method:nsInputStreamPump::OnInputStreamReady
+//@@lineseek:nsInputStreamPump::OnInputStreamReady(nsIAsyncInputStream *stream)
+//@@lineseek:LOG(("nsInputStreamPump::OnInputStreamReady [this=%x]\n", this));
+probe process(@@lib:bin/components/libnecko.so).statement(@@statement:ref) {
+  rawPtr = $this->mListener->mRawPtr;
+  if (rawPtr)
+    callbackAddr = @cast(rawPtr, "be_a_pptr", "<be_a_ptr.h>")[0];
+  else
+    callbackAddr = 0;
+
+  data = sprintf("\"scriptName\":\":!vt:%x\"", callbackAddr);
+  track_enter(0x1021, data);
+}
+
+probe process(@@lib:bin/components/libnecko.so).function("nsInputStreamPump::OnInputStreamReady").return {
+  track_leave(0x1021, "");
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+//// XPConnect -> JS Crossing : 0x1040
+
+//@@file:mozilla/js/src/xpconnect/src/xpcwrappedjsclass.cpp
+//@@method:nsXPCWrappedJSClass::CallMethod
+//@@lineseek:success = js_Invoke(cx, argc, stackbase, 0);
+probe process(@@lib:bin/components/libxpconnect.so).statement(@@statement:ref) {
+  track_enter(0x1040, "");
+}
+
+//@@file:mozilla/js/src/xpconnect/src/xpcwrappedjsclass.cpp
+//@@method:nsXPCWrappedJSClass::CallMethod
+//@@lineseek:success = js_Invoke(cx, argc, stackbase, 0);
+//@@lineseek:result = *stackbase;
+probe process(@@lib:bin/components/libxpconnect.so).statement(@@statement:ref) {
+  data = script_info_from_jsfunobj($fval);
+  track_leave(0x1040, data);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+//// nsProxyObjectCallInfo : 0x1060
+
+// the prologue logic is not working on this dude, need to move to a statement
+//probe process(@1).function("nsProxyObjectCallInfo::Run")
+//@@file:mozilla/xpcom/proxy/src/nsProxyEvent.cpp
+//@@method:nsProxyObjectCallInfo::Run
+//@@lineseek:nsProxyObjectCallInfo::Run()
+//@@lineseek:mResult = NS_InvokeByIndex(mOwner->GetProxiedInterface(),
+probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
+{
+  rawPtr = $this->mOwner->mRawPtr->mProxyObject->mRawPtr->mRealObject->mRawPtr;
+  // $mCallback->mRawPtr's value is the address of an instance on the heap
+  // The first pointer at that location is the pointer to the vtable.
+  callbackAddr = @cast(rawPtr, "be_a_pptr", "<be_a_ptr.h>")[0];
+
+  data = sprintf("\"scriptName\":\":!vt:%x\"", callbackAddr);
+  track_enter(0x1060, data);
+}
+
+probe process(@@lib:lib/libxpcom_core.so).function("nsProxyObjectCallInfo::Run").return
+{
+  track_leave(0x1060, "");
+}
 
 
 ////////////////////////////////////////////////////////////////////////////////
