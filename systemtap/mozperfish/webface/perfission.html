@@ -1,0 +1,104 @@
+<html>
+  <head>
+    <title>Perfission</title>
+    <script type="text/javascript" src="jquery-1.4.2.js"></script>
+    <script type="text/javascript" src="protovis-3.2.js"></script>
+    <script type="text/javascript">
+$(function() {
+  $.ajax({
+    url: "perfdata.json",
+    dataType: "json",
+    success: gotDataBuildVis
+  });
+});
+
+var eventMappings = [
+ [1, "layout"],
+ [2, "style"],
+ [3, "paint"],
+ [7, "timer"],
+ [15, "js"],
+ [17, "gc"],
+ [0x1000, "event loop"],
+ [0x1020, "input ready"],
+ [0x1021, "input pump"],
+ [0x1040, "xpconnect to js"],
+ [0x1060, "proxy"],
+];
+
+var perfdata;
+
+var state = {
+  selThread: null,
+  selThreadNode: null,
+};
+
+function gotDataBuildVis(data) {
+  perfdata = data;
+  console.log(data);
+  makeVis();
+}
+    </script>
+  </head>
+  <body>
+    <script type="text/javascript+protovis">
+var WIDTH=1024;
+var PER_THREAD_HEIGHT=20;
+var LEFT_PAD = 40;
+
+var vis;
+function makeVis() {
+  // unified temporal x-axis
+  var x = pv.Scale.linear(0.0, perfdata.lastEventEndsAtTime)
+                  .range(0, WIDTH - LEFT_PAD);
+
+  var eventColors = pv.Colors.category10(eventMappings, function(d) d[0]);
+
+  vis = new pv.Panel()
+    .left(LEFT_PAD)
+    .width(WIDTH)
+    .height(PER_THREAD_HEIGHT * perfdata.threads.length);
+
+
+  var threadBgBase = vis.add(pv.Panel)
+    .data(perfdata.threads)
+    .height(PER_THREAD_HEIGHT)
+    .top(function() this.index * PER_THREAD_HEIGHT);
+
+  var threadBase = vis.add(pv.Panel)
+    .data(perfdata.threads)
+    .height(PER_THREAD_HEIGHT)
+    .top(function() this.index * PER_THREAD_HEIGHT);
+  
+  var selectedColor = pv.color('lightblue');
+  var unselectedColor = pv.color('white');
+
+  var threadBgPanel = threadBgBase.add(pv.Panel)
+    .fillStyle(function (d) (state.selThread === d) ? selectedColor
+                                                    : unselectedColor);
+
+  var threadPanel = threadBase.add(pv.Panel)
+  var threadLabelBox = threadPanel.anchor("left").add(pv.Bar)
+    .left(-LEFT_PAD)
+    .width(LEFT_PAD)
+    .fillStyle("#eeeeee")
+    .event("click", function (d) {
+        state.selThread = d;
+        threadBgBase.render();
+      });
+  var threadLabel = threadLabelBox.anchor("center").add(pv.Label)
+    .text(function(d) d.tid.toString());
+
+  var topBars = threadPanel.add(pv.Bar)
+    .data(function(d) d.events)
+    .left(function(d) x(d.time))
+    .width(function(d) x(d.duration))
+    .bottom(0)
+    .height(20)
+    .fillStyle(function (d) d.type ? eventColors(d.type) : null);
+
+  vis.render();
+}
+    </script>
+  </body>
+</html>

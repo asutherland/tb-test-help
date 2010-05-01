@@ -832,7 +832,6 @@ probe process(@@lib:bin/components/libxpconnect.so).statement(@@statement:ref) {
 //@@lineseek:nsProxyObjectCallInfo::Run()
 //@@lineseek:mResult = NS_InvokeByIndex(mOwner->GetProxiedInterface(),
 probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
-{
   rawPtr = $this->mOwner->mRawPtr->mProxyObject->mRawPtr->mRealObject->mRawPtr;
   // $mCallback->mRawPtr's value is the address of an instance on the heap
   // The first pointer at that location is the pointer to the vtable.
@@ -842,8 +841,7 @@ probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
   track_enter(0x1060, data);
 }
 
-probe process(@@lib:lib/libxpcom_core.so).function("nsProxyObjectCallInfo::Run").return
-{
+probe process(@@lib:lib/libxpcom_core.so).function("nsProxyObjectCallInfo::Run").return {
   track_leave(0x1060, "");
 }
 

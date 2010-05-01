@@ -1,12 +1,18 @@
-# Process the output of mozspeedtrace.stp
+# Process the output of mozperfish.stp
 #
 # See mozspeedtrace.stp to understand what the gameplan is and then this file
 # for the specifics.
 #
 # Our outputs are as follows:
-# - One HTML file per thread with the HTML file being fashioned to cause
-#   SpeedTracer to see it as one of its own and volunteer to open it.  We
-#   place this file 
+# - A big JSON file whose schema is like so: {
+#     threads: [
+#       {
+#         events: [],
+#         mevents: []
+#       }
+#     ],
+#     lastEventEndsAtTime: 0,
+#   }
 
 import json, os, os.path
 
@@ -19,25 +25,32 @@ class ProcContext(object):
         if not os.path.exists(self.outdir):
             os.mkdir(self.outdir)
 
-        self._read_templates()
+    def symlink_web_files_to_output_dir(self):
+        '''
+        Symlink our web interface files into the output directory where we
+        are also writing perfdata.json.
+        '''
+        web_templ_dir = os.path.join(os.path.dirname(__file__), 'webface')        
+        for fname in os.listdir(web_templ_dir):
+            # ignore emacs scratch files :)
+            if fname.endswith('~'):
+                continue
+            src_file = os.path.join(web_templ_dir, fname)
+            if os.path.isfile(src_file):
+                dest_link = os.path.join(self.outdir, fname)
+                if not os.path.exists(dest_link):
+                    os.symlink(src_file, dest_link)
+                
 
-    def _read_templates(self):
-        templ_path = os.path.join(os.path.dirname(__file__), 'template.html')
-        f = open(templ_path, 'r')
-        data = f.read()
+    def write_results_file(self, json_obj):
+        path = os.path.join(self.outdir, 'perfdata.json')
+        f = open(path, 'w')
+        json.dump(json_obj, f)
         f.close()
-
-        # look at our elegant templating language! so shiny!
-        self.templ_bits = data.split("@@DATA@@")
-
-    def make_file_for_thread(self, tid):
-        fname = 'thread_%d.html' % (tid,)
-        path = os.path.join(self.outdir, fname)
-        return open(path, 'w')
 
 class ThreadProc(object):
     '''
-    Tracks per-thread information.  This consists of the 
+    Tracks per-thread information.
     '''
 
     def __init__(self, context, tid):
@@ -46,14 +59,29 @@ class ThreadProc(object):
         # the top-level sequence to report in the output file
         self.next_sequence = 0
 
+        self.prev_top_end_time = 0
+        self.top_event_needing_fixup = None
+
         # create the stack with sentinel.
         # each elment is (depth, list of items at that depth)
         self.stack = [(0, ())]
 
-        self.f = self.context.make_file_for_thread(tid)
-        self.f.write(context.templ_bits[0])
+        self.events = []
+        self.mevents = []
+
+    def build_json_obj(self):
+        return {
+            'tid': self.tid,
+            'events': self.events,
+            'mevents': self.mevents
+            }
 
     def chew(self, obj):
+        ## this is getting out of control, need to normalize by:
+        # 1) Having synthetic top-level events just get created with correct
+        #    time data.
+        # 2) Handling memory event types either completely separately or
+        #    exposed as 0 duration.
         obj_depth = obj['depth']
 
         # -- normalize into output form
@@ -62,9 +90,25 @@ class ThreadProc(object):
         del obj['depth']
 
         # - transform units as appropriate
-        # integer nS => float mS
-        obj['time'] = obj['time'] * 0.000001
-        obj['duration'] = obj['duration'] * 0.000001
+        if 'time' in obj:
+            # integer nS => float mS
+            obj['time'] *= 0.000001
+        else:
+            obj['time'] = self.prev_top_end_time
+
+        # - figure out the type of event...
+        if 'mtype' in obj:
+            # it's a memory event!
+            self.mevents.append(obj)
+            return
+
+        if 'duration' in obj:
+            obj['duration'] *= 0.000001
+        else:
+            # this is a synthetic inter-space event
+            self.top_event_needing_fixup = obj
+            self.events.append(obj)
+            return
 
         data = obj['data']
         # - perform address translation on potentially affected fields
@@ -75,12 +119,6 @@ class ThreadProc(object):
                 data['callerScriptName'].startswith(':!')):
             data['callerScriptName'] = \
                 self.context.procinfo.transformString(data['callerScriptName'])
-
-        # - create a stack frame so we can fit the function name in...
-        if 'functionName' in data:
-            data['backTrace'] = 'blah,"%s",%d,1,"","%s"' % (
-                data.get('scriptName', ''), data.get('scriptLine', 0),
-                data.get('functionName', ''))
 
         # - add fields...
         obj['children'] = ()
@@ -100,7 +138,12 @@ class ThreadProc(object):
             if obj_depth == 0:
                 obj['sequence'] = self.next_sequence
                 self.next_sequence += 1
-                self.f.write(json.dumps(obj)+'\n')
+                if self.top_event_needing_fixup:
+                    self.top_event_needing_fixup['duration'] = (
+                        obj['time'] - self.top_event_needing_fixup['time'])
+                    self.top_event_needing_fixup = None
+                self.prev_top_end_time = obj['time'] + obj['duration']
+                self.events.append(obj)
             else:
                 cur_stack.append(obj)
         else: # obj_depth > cur_depth
@@ -123,12 +166,16 @@ class Processor(object):
 
         thread_procs = {}
 
+        obj = None
+
         # eat the lines
         for blob in streamer:
             for line in blob.splitlines():
                 if line[0] != '{':
                     print 'Ignoring line:', line.rstrip()
                     continue
+                # transform trailing stuff...
+                line = line.replace(',}', '}')
                 try:
                     obj = json.loads(line)
                 except Exception, e:
@@ -142,9 +189,20 @@ class Processor(object):
                     tproc = thread_procs[tid] = ThreadProc(context, tid)
 
                 tproc.chew(obj)
+                    
+
+        lastEventEndsAtTime = obj['time']
+        if 'duration' in obj:
+            lastEventEndsAtTime += obj['duration']
 
         # tell the thread procs we have no more lines
-        for tproc in thread_procs.values():
-            tproc.allDone()
+        thread_objs = [tp.build_json_obj() for tp in thread_procs.values()]
+        json_obj = {
+            'threads': thread_objs,
+            'lastEventEndsAtTime': lastEventEndsAtTime
+            }
+
+        context.write_results_file(json_obj)
+        context.symlink_web_files_to_output_dir()
             
             
