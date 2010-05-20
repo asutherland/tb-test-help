@@ -1,0 +1,17 @@
+#!/usr/bin/python
+
+# WARNING!  Don't try and redirect the output of this file to the input file,
+#  or your shell will likely screw you.
+
+import json, sys
+
+if len(sys.argv) > 1:
+    f = open(sys.argv[1])
+else:
+    f = sys.stdin
+
+obj = json.load(f)
+
+json.dump(obj, sys.stdout, indent=2)
+
+f.close() 
