@@ -51,10 +51,10 @@
                             "../../jetpack-sdk"))
         (unittestdir (file-name-directory (buffer-file-name)))
         (testfile (file-name-nondirectory (buffer-file-name))))
-    (message (concat "cd " jetpackdir ";"
+    (concat "cd " jetpackdir ";"
             ". bin/activate" ";"
             "cd " unittestdir ";"
-            "cfx test -F" testfile))))
+            "cfx test -F" testfile)))
 
 ;;   File "resource://wmsy-wmsy-tests/test-vs-static.js", line 56, in anonymous
 
