@@ -101,7 +101,7 @@
  *    not clear how the UI would surface them anyways?  I'll look into this when
  *    it comes time to attribute memory usage.
  */
-//@@stapargs:-g,-DMAXSTRINGLEN=1024,-b,-s2
+//@@stapargs:-g,-DMAXSTRINGLEN=1024,-b,-s2,-v,-v
 // "-g" allows us to use embedded C code
 // "-DMAXSTRINGLEN=1024" allows us to process really long strings albeit with
 //    some potential memory bloat.
@@ -135,8 +135,7 @@ function track_enter(eventCode, pre_data) {
 
   // if we are depth 0, handle inter-event stuff...
   if ((depth == 0) && td_any_alloc[ctx, -1]) {
-    printf("{\"tid\":%d,\"depth\":null,\"type\":null,"
-           "\"mem\":{",
+    printf("{\"tid\":%d,\"depth\":null,\"type\":null,\"mem\":{",
            ctx);
     mem_stats_data_string(ctx, -1);
     printf("}}\n");
@@ -168,8 +167,8 @@ function track_leave(eventCode, data) {
 
     //printf("exit: %d @ %d ... %s\n", eventCode, depth, data);
 
-    printf("{\"tid\":%d,\"depth\":%d,\"type\":%d,"
-           "\"time\":%d,\"duration\":%d,\"data\":{%s%s},\"mem\":{",
+    // XXX C string fusion over multiple lines stopped working?
+    printf("{\"tid\":%d,\"depth\":%d,\"type\":%d,\"time\":%d,\"duration\":%d,\"data\":{%s%s},\"mem\":{",
            ctx, depth, eventCode,
            start - dawn_of_time, duration, pre_data, data);
     if (td_any_alloc[ctx, depth])
@@ -346,8 +345,8 @@ function mem_life_cycle_alloc(kind, ptr, size) {
   ctx = tid();
   depth = t_depth[ctx];
 
-  printf("{\"tid\":%d,\"depth\":%d,\"mtype\":\"alloc\","
-         "\"time\":%d,\"data\":{\"source\":%d,\"ptr\":%d,\"size\":%d}}\n",
+  // XXX C string fusion across multiple lines stopped working...
+  printf("{\"tid\":%d,\"depth\":%d,\"mtype\":\"alloc\",\"time\":%d,\"data\":{\"source\":%d,\"ptr\":%d,\"size\":%d}}\n",
          ctx, depth,
          now - dawn_of_time, kind, ptr, size);
 }
@@ -357,9 +356,8 @@ function mem_life_cycle_realloc(kind, oldptr, newptr, oldsize, newsize) {
   ctx = tid();
   depth = t_depth[ctx];
 
-  printf("{\"tid\":%d,\"depth\":%d,\"mtype\":\"realloc\","
-         "\"time\":%d,\"data\":{\"source\":%d,\"oldptr\":%d,\"newptr\":%d,"
-         "\"oldsize\":%d,\"newsize\":%d}}\n",
+  // XXX C string fusion across multiple lines stopped working...
+  printf("{\"tid\":%d,\"depth\":%d,\"mtype\":\"realloc\",\"time\":%d,\"data\":{\"source\":%d,\"oldptr\":%d,\"newptr\":%d,\"oldsize\":%d,\"newsize\":%d}}\n",
          ctx, depth,
          now - dawn_of_time, kind, oldptr, newptr, oldsize, newsize);
 }
@@ -369,8 +367,8 @@ function mem_life_cycle_free(kind, ptr, size) {
   ctx = tid();
   depth = t_depth[ctx];
 
-  printf("{\"tid\":%d,\"depth\":%d,\"mtype\":\"free\","
-         "\"time\":%d,\"data\":{\"source\":%d,\"ptr\":%d,\"size\":%d}}\n",
+  // XXX C string fusion across multiple lines stopped working...
+  printf("{\"tid\":%d,\"depth\":%d,\"mtype\":\"free\",\"time\":%d,\"data\":{\"source\":%d,\"ptr\":%d,\"size\":%d}}\n",
          ctx, depth,
          now - dawn_of_time, kind, ptr, size);
 }
@@ -431,7 +429,7 @@ probe vm.munmap {
 //@@method:arena_malloc_small
 //@@lineseek:arena_malloc_small(arena_t *arena, size_t size, bool zero)
 //@@lineseek:if (ret == NULL) {
-probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+probe process(@@exe:).statement(@@statement:ref) {
   mem_stats_track_alloc(0x10, $size);
 }
 
@@ -439,7 +437,7 @@ probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
 //@@method:arena_malloc_large
 //@@lineseek:arena_malloc_large(arena_t *arena, size_t size, bool zero)
 //@@lineseek:if (ret == NULL) {
-probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+probe process(@@exe:).statement(@@statement:ref) {
   mem_stats_track_alloc(0x11, $size);
 }
 
@@ -447,7 +445,7 @@ probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
 //@@method:huge_malloc
 //@@lineseek:huge_malloc(size_t size, bool zero)
 //@@lineseek:if (ret == NULL) {
-probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+probe process(@@exe:).statement(@@statement:ref) {
   size = $size;
   mem_stats_track_alloc(0x12, size);
   mem_life_cycle_alloc(0x12, $ret, size);
@@ -459,7 +457,7 @@ probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
 //@@method:iralloc
 //@@lineseek:iralloc(void *ptr, size_t size)
 //@@lineseek:if (size <= arena_maxclass)
-probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+probe process(@@exe:).statement(@@statement:ref) {
   mem_stats_track_realloc(0x1, $oldsize, $size);
 }
 
@@ -467,7 +465,7 @@ probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
 //@@method:huge_ralloc
 //@@lineseek:huge_ralloc(void *ptr, size_t size, size_t oldsize)
 //@@lineseek:if (ret == NULL)
-probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+probe process(@@exe:).statement(@@statement:ref) {
   mem_life_cycle_realloc(0x12, $ptr, $ret, $oldsize, $size);
 }
 
@@ -478,7 +476,7 @@ probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
 //@@method:arena_dalloc_small
 //@@lineseek:arena_dalloc_small(arena_t *arena, arena_chunk_t *chunk, void *ptr,
 //@@lineseek:arena_run_reg_dalloc(run, bin, ptr, size);
-probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+probe process(@@exe:).statement(@@statement:ref) {
   mem_stats_track_free(0x10, $size);
 }
 
@@ -487,7 +485,7 @@ probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
 //@@lineseek:arena_dalloc_large(arena_t *arena, arena_chunk_t *chunk, void *ptr)
 // MALLOC_STATS is always defined for us, so this line will always be available
 //@@lineseek:arena->stats.allocated_large -= size;
-probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+probe process(@@exe:).statement(@@statement:ref) {
   mem_stats_track_free(0x11, $size);
 }
 
@@ -495,7 +493,7 @@ probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
 //@@method:huge_dalloc
 //@@lineseek:huge_dalloc(void *ptr)
 //@@lineseek:extent_tree_ad_remove(&huge, node);
-probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
+probe process(@@exe:).statement(@@statement:ref) {
   size = $node->size;
   mem_stats_track_free(0x12, size);
   mem_life_cycle_free(0x12, $ptr, size);
@@ -510,7 +508,7 @@ probe process(@@lib:bin/thunderbird-bin).statement(@@statement:ref) {
  */
 
 /*
-probe process(@@lib:lib/libmozjs.so).function("NewGCArena") {
+probe process(@@lib:bin/libxul.so).function("NewGCArena") {
 }
 */
 
@@ -520,16 +518,16 @@ probe process(@@lib:lib/libmozjs.so).function("NewGCArena") {
  */
 
 /*
-probe process(@@lib:lib/libmozjs.so).function("js_NewGCObject") {
+probe process(@@lib:bin/libxul.so).function("js_NewGCObject") {
 }
 
-probe process(@@lib:lib/libmozjs.so).function("js_NewGCString") {
+probe process(@@lib:bin/libxul.so).function("js_NewGCString") {
 }
 
-probe process(@@lib:lib/libmozjs.so).function("js_NewGCFunction") {
+probe process(@@lib:bin/libxul.so).function("js_NewGCFunction") {
 }
 
-probe process(@@lib:lib/libmozjs.so).function("js_NewGCXML") {
+probe process(@@lib:bin/libxul.so).function("js_NewGCXML") {
 }
 */
 
@@ -542,12 +540,12 @@ probe process(@@lib:lib/libmozjs.so).function("js_NewGCXML") {
 ////////////////////////////////////////////////////////////////////////////////
 //// LAYOUT : 1
 
-probe process(@@lib:bin/components/libgklayout.so).function("PresShell::DoReflow") {
+probe process(@@lib:bin/libxul.so).function("PresShell::DoReflow") {
   track_enter(1, "");
 }
 
 // returns false when interrupted, true when completed
-probe process(@@lib:bin/components/libgklayout.so).function("PresShell::DoReflow").return {
+probe process(@@lib:bin/libxul.so).function("PresShell::DoReflow").return {
   track_leave(1, "");
 }
 
@@ -559,18 +557,18 @@ probe process(@@lib:bin/components/libgklayout.so).function("PresShell::DoReflow
 //  the hope is that we catch all that through specific coverage of its
 //  children.
 
-probe process(@@lib:bin/components/libgklayout.so).function("nsCSSFrameConstructor::ProcessPendingRestyles") {
+probe process(@@lib:bin/libxul.so).function("nsCSSFrameConstructor::ProcessPendingRestyles") {
   track_enter(2, "");
 }
 
-probe process(@@lib:bin/components/libgklayout.so).function("nsCSSFrameConstructor::ProcessPendingRestyles").return {
+probe process(@@lib:bin/libxul.so).function("nsCSSFrameConstructor::ProcessPendingRestyles").return {
   track_leave(2, "");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 //// PAINT : 3
 
-probe process(@@lib:bin/components/libgklayout.so).function("PresShell::Paint") {
+probe process(@@lib:bin/libxul.so).function("PresShell::Paint") {
   data = sprintf("\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d",
                  $aDirtyRegion->mBoundRect->x, $aDirtyRegion->mBoundRect->y,
                  $aDirtyRegion->mBoundRect->width,
@@ -579,7 +577,7 @@ probe process(@@lib:bin/components/libgklayout.so).function("PresShell::Paint") 
 }
 
 // returns false when interrupted, true when completed
-probe process(@@lib:bin/components/libgklayout.so).function("PresShell::Paint").return {
+probe process(@@lib:bin/libxul.so).function("PresShell::Paint").return {
   track_leave(3, "");
 }
 
@@ -602,7 +600,7 @@ probe process(@@lib:bin/components/libgklayout.so).function("PresShell::Paint").
 //@@method:nsGlobalWindow::RunTimeout
 //@@lineseek:nsGlobalWindow::RunTimeout(nsTimeout *aTimeout)
 //@@lineseek:if (!scriptObject) {
-probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   if ($scriptObject)
     track_enter(15, ""); // but we're calling into JS here...
 }
@@ -613,7 +611,7 @@ probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
 //@@lineseek:nsGlobalWindow::RunTimeout(nsTimeout *aTimeout)
 //@@lineseek:if (!scriptObject) {
 //@@lineseek:PRBool is_undefined;
-probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   data = sprintf("\"scriptName\":\"%s\",\"scriptLine\":%d",
                  user_string($filename), $lineNo);
   track_enter(15, data);
@@ -624,11 +622,13 @@ probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
 //@@lineseek:nsGlobalWindow::RunTimeout(nsTimeout *aTimeout)
 //@@lineseek:if (!scriptObject) {
 //@@lineseek:handler = nsnull; // drop reference before dropping timeout refs.
-probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   scriptObj = $scriptObject;
   // the non-scriptObj case is handled by the preceding probe
   if (scriptObj) {
-    data = script_info_from_jsfunobj(scriptObj);
+    // the scriptObj, although void, is really a JSObject* of variety
+    //  JSFunction*, or at least we are assuming that :)
+    data = script_info_from_jsfun(scriptObj);
     track_leave(15, data);
   }
   else {
@@ -636,19 +636,30 @@ probe process(@@lib:bin/components/libgklayout.so).statement(@@statement:ref) {
   }
 }
 
+/**
+ * Takes a pointer to a C++ instance that relies on virtual dispatch and
+ *  returns the contents of the first pointer from that instance which will
+ *  be a pointer to the/a vtbl.  Even in the case where we are actually
+ *  getting a sliced vtable, the address will still be 'within' the range
+ *  attributed to the specific class.
+ */
+function get_vtbl_ptr_from_instance(ptr) {
+  return @cast(ptr, "PRUptrdiff", @@lib:lib/libnspr4.so)[0];
+}
+
 // === nsITimer (convertible to Global Window)
 
 //@@file:mozilla/xpcom/threads/nsTimerImpl.cpp
 //@@method:nsTimerImpl::Fire
 //@@lineseek:if (callbackType == CALLBACK_TYPE_INTERFACE)
-probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   track_enter(7, "");
 
   // fake an entry to say where we are going, native-like.
   if ($callbackType == 2)
     timerAddr = $callback->c;
   else
-    timerAddr = @cast(&$callback, "be_a_pptr", "<be_a_ptr.h>")[0];
+    timerAddr = get_vtbl_ptr_from_instance($callback->i);
 
   data = sprintf("\"scriptName\":\":!vt:%x\",\"scriptLine\":0", timerAddr);
   track_enter(15, data);
@@ -658,7 +669,7 @@ probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
 //@@method:nsTimerImpl::Fire
 //@@lineseek:if (callbackType == CALLBACK_TYPE_INTERFACE)
 //@@lineseek:mFiring = PR_FALSE;
-probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   track_leave(15, "");
   track_leave(7, "");
 }
@@ -700,11 +711,11 @@ probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
 ////////////////////////////////////////////////////////////////////////////////
 //// GC_EVENT : 17
 
-probe process(@@lib:lib/libmozjs.so).function("js_GC") {
+probe process(@@lib:bin/libxul.so).function("js_GC") {
   track_enter(17, "");
 }
 
-probe process(@@lib:lib/libmozjs.so).function("js_GC").return {
+probe process(@@lib:bin/libxul.so).function("js_GC").return {
   track_leave(17, "");
 }
 
@@ -740,11 +751,11 @@ probe process(@@lib:lib/libmozjs.so).function("js_GC").return {
 //@@method:nsThread::ProcessNextEvent
 //@@lineseek:nsThread::ProcessNextEvent(PRBool mayWait, PRBool *result)
 //@@lineseek:if (event) {
-probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   // $event->mRawPtr's value is the address of an instance on the heap
   // The first pointer at that location is the pointer to the vtable.
   if ($event->mRawPtr)
-    eventAddr = @cast(&$event, "be_a_pptr", "<be_a_ptr.h>")[0];
+    eventAddr = get_vtbl_ptr_from_instance($event->mRawPtr);
   else
     eventAddr = 0;
 
@@ -757,7 +768,7 @@ probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
 //@@lineseek:nsThread::ProcessNextEvent(PRBool mayWait, PRBool *result)
 //@@lineseek:if (event) {
 //@@lineseek:--mRunningEvent;
-probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   track_leave(0x1000, "");
 }
 
@@ -765,16 +776,16 @@ probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
 ////////////////////////////////////////////////////////////////////////////////
 //// InputStreamReadyEvent : 0x1020
 
-probe process(@@lib:lib/libxpcom_core.so).function("nsInputStreamReadyEvent::Run") {
+probe process(@@lib:bin/libxul.so).function("nsInputStreamReadyEvent::Run") {
   // $mCallback->mRawPtr's value is the address of an instance on the heap
   // The first pointer at that location is the pointer to the vtable.
-  callbackAddr = @cast(&$this->mCallback, "be_a_pptr", "<be_a_ptr.h>")[0];
+  callbackAddr = get_vtbl_ptr_from_instance($this->mCallback->mRawPtr);
 
   data = sprintf("\"scriptName\":\":!vt:%x\"", callbackAddr);
   track_enter(0x1020, data);
 }
 
-probe process(@@lib:lib/libxpcom_core.so).function("nsInputStreamReadyEvent::Run").return {
+probe process(@@lib:bin/libxul.so).function("nsInputStreamReadyEvent::Run").return {
   track_leave(0x1020, "");
 }
 
@@ -786,10 +797,10 @@ probe process(@@lib:lib/libxpcom_core.so).function("nsInputStreamReadyEvent::Run
 //@@method:nsInputStreamPump::OnInputStreamReady
 //@@lineseek:nsInputStreamPump::OnInputStreamReady(nsIAsyncInputStream *stream)
 //@@lineseek:LOG(("nsInputStreamPump::OnInputStreamReady [this=%x]\n", this));
-probe process(@@lib:bin/components/libnecko.so).statement(@@statement:ref) {
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   rawPtr = $this->mListener->mRawPtr;
   if (rawPtr)
-    callbackAddr = @cast(rawPtr, "be_a_pptr", "<be_a_ptr.h>")[0];
+    callbackAddr = get_vtbl_ptr_from_instance(rawPtr);
   else
     callbackAddr = 0;
 
@@ -797,7 +808,7 @@ probe process(@@lib:bin/components/libnecko.so).statement(@@statement:ref) {
   track_enter(0x1021, data);
 }
 
-probe process(@@lib:bin/components/libnecko.so).function("nsInputStreamPump::OnInputStreamReady").return {
+probe process(@@lib:bin/libxul.so).function("nsInputStreamPump::OnInputStreamReady").return {
   track_leave(0x1021, "");
 }
 
@@ -807,17 +818,18 @@ probe process(@@lib:bin/components/libnecko.so).function("nsInputStreamPump::OnI
 
 //@@file:mozilla/js/src/xpconnect/src/xpcwrappedjsclass.cpp
 //@@method:nsXPCWrappedJSClass::CallMethod
-//@@lineseek:success = js_Invoke(cx, argc, stackbase, 0);
-probe process(@@lib:bin/components/libxpconnect.so).statement(@@statement:ref) {
+//@@lineseek:success = JS_CallFunctionValue(cx, thisObj, fval, argc, argv, &rval);
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   track_enter(0x1040, "");
 }
 
 //@@file:mozilla/js/src/xpconnect/src/xpcwrappedjsclass.cpp
 //@@method:nsXPCWrappedJSClass::CallMethod
-//@@lineseek:success = js_Invoke(cx, argc, stackbase, 0);
-//@@lineseek:result = *stackbase;
-probe process(@@lib:bin/components/libxpconnect.so).statement(@@statement:ref) {
-  data = script_info_from_jsfunobj($fval);
+//@@lineseek:success = JS_CallFunctionValue(cx, thisObj, fval, argc, argv, &rval);
+//@@lineseek:JS_SetOptions(cx, oldOpts);
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
+  // fval is a jsval... get the pointer out of it
+  data = script_info_from_jsfun($fval->asPtr);
   track_leave(0x1040, data);
 }
 
@@ -831,17 +843,15 @@ probe process(@@lib:bin/components/libxpconnect.so).statement(@@statement:ref) {
 //@@method:nsProxyObjectCallInfo::Run
 //@@lineseek:nsProxyObjectCallInfo::Run()
 //@@lineseek:mResult = NS_InvokeByIndex(mOwner->GetProxiedInterface(),
-probe process(@@lib:lib/libxpcom_core.so).statement(@@statement:ref) {
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   rawPtr = $this->mOwner->mRawPtr->mProxyObject->mRawPtr->mRealObject->mRawPtr;
-  // $mCallback->mRawPtr's value is the address of an instance on the heap
-  // The first pointer at that location is the pointer to the vtable.
-  callbackAddr = @cast(rawPtr, "be_a_pptr", "<be_a_ptr.h>")[0];
+  callbackAddr = get_vtbl_ptr_from_instance(rawPtr);
 
   data = sprintf("\"scriptName\":\":!vt:%x\"", callbackAddr);
   track_enter(0x1060, data);
 }
 
-probe process(@@lib:lib/libxpcom_core.so).function("nsProxyObjectCallInfo::Run").return {
+probe process(@@lib:bin/libxul.so).function("nsProxyObjectCallInfo::Run").return {
   track_leave(0x1060, "");
 }
 
@@ -866,14 +876,21 @@ function jsval_to_string(jsval) {
   // double
   if (tag == 0x2) {
     //return sprintf("%f",
-    //               @cast(jsval & ~0x7, "jsdouble", @@lib:lib/libmozjs.so));
+    //               @cast(jsval & ~0x7, "jsdouble", @@lib:bin/libxul.so));
     return "<double>";
   }
   // string
   else if (tag == 0x4) {
     jsval = jsval & ~0x7;
-    len = @cast(jsval, "JSString", @@lib:lib/libmozjs.so)->mLength & 0x1ff;
-    cp = @cast(jsval, "JSString", @@lib:lib/libmozjs.so)->mChars;
+    // ugh, systemtap's cast operation is failing to believe that JSString
+    //  is actually a type, so we comment out the old and hack in the new.
+    len = @cast(jsval, "JSString", @@lib:bin/libxul.so)->mLengthAndFlags & 0x1ff;
+    cp = @cast(jsval, "JSString", @@lib:bin/libxul.so)->mChars;
+
+    // (first entry is the size_t mLengthAndFlags)
+    //len = @cast(jsval, "size_t", @@lib:bin/libxul.so) & 0x1ff;
+    // second entry is the unioned jschar *
+    //cp = @cast(jsval + 8, "size_t", @@lib:bin/libxul.so);
 
     return user_u16_string(cp, len);
   }
@@ -892,15 +909,18 @@ function jsval_to_string(jsval) {
   return sprintf("<??? %p>", jsval);
 }
 
-function script_info_from_jsfunobj(jsfunobj) {
-  if (jsfunobj) {
-    jsfun = @cast(jsfunobj, "JSObject", @@lib:lib/libmozjs.so)->fslots[2];
+// jsfunval is a jsval which is a pointer to the JSFunction...
+/*
+function script_info_from_jsfunval(jsfunval) {
+  if (jsfunval) {
+    jsfun = @cast(jsfunval, "js::", @@lib:bin/libxul.so)->fslots[0]->data->asPtr;
   }
   else {
     jsfun = 0;
   }
   return script_info_from_jsfun(jsfun);
 }
+*/
 
 function script_info_from_jsfun(jsfun) {
   if (jsfun_cache_line[jsfun] == 0) {
@@ -909,22 +929,22 @@ function script_info_from_jsfun(jsfun) {
       jsfun_cache_func_name[jsfun] = "<no func>";
     }
     else {
-      atom = @cast(jsfun, "JSFunction", @@lib:lib/libmozjs.so)->atom;
+      atom = @cast(jsfun, "JSFunction", @@lib:bin/libxul.so)->atom;
     }
 
     jsfun_cache_func_name[jsfun] = jsval_to_string(atom);
 
-    funflags = @cast(jsfun, "JSFunction", @@lib:lib/libmozjs.so)->flags;
+    funflags = @cast(jsfun, "JSFunction", @@lib:bin/libxul.so)->flags;
 
     // interpreted?
     if ((funflags & 0xc000) >= 0x4000) {
-      script = @cast(jsfun, "JSFunction", @@lib:lib/libmozjs.so)->u->i->script;
+      script = @cast(jsfun, "JSFunction", @@lib:bin/libxul.so)->u->i->script;
       if (script) {
         jsfun_cache_filename[jsfun] =
           basename(user_string(@cast(script, "JSScript",
-                                     @@lib:lib/libmozjs.so)->filename));
+                                     @@lib:bin/libxul.so)->filename));
         jsfun_cache_line[jsfun] = @cast(script, "JSScript",
-                                        @@lib:lib/libmozjs.so)->lineno;
+                                        @@lib:bin/libxul.so)->lineno;
       }
       else {
         jsfun_cache_filename[jsfun] = "<no script>";
@@ -937,9 +957,8 @@ function script_info_from_jsfun(jsfun) {
       jsfun_cache_line[jsfun] = 1;
     }
   }
-  return sprintf("\"scriptName\":\"%s\","
-                 "\"scriptLine\":%d,"
-                 "\"functionName\":\"%s\"",
+  // XXX C string fusion across multiple lines stopped working...
+  return sprintf("\"scriptName\":\"%s\",\"scriptLine\":%d,\"functionName\":\"%s\"",
                  jsfun_cache_filename[jsfun],
                  jsfun_cache_line[jsfun],
                  jsfun_cache_func_name[jsfun]);

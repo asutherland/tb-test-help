@@ -1,4 +1,4 @@
-#/usr/bin/python2.6
+#!/usr/bin/python2.6
 
 # This file is intended to be a pragmatic wrapper around invoking systemtap
 #  scripts that compensates for the following limitations we currently
@@ -24,6 +24,7 @@
 #  used by others without this script.
 
 import imp, optparse, os.path, re, shutil, struct, subprocess, sys, time
+import fcntl
 import addrsymfilt
 
 class ChewContext(object):
@@ -101,7 +102,7 @@ class ScriptChewer(object):
     - Allocating command-line argument slots (chew-time) and performing path
        resolution for libraries (invocation-time) using the @@lib expression.
     '''
-    def __init__(self, context):
+    def __init__(self, context, exe_path):
         self.context = context
 
         self.out_lines = None
@@ -115,9 +116,10 @@ class ScriptChewer(object):
         self.cached_file_lines = None
 
         # - @@lib support
-        self.arg_values = []
-        self.arg_descriptions = []
-        self.known_libs = {}
+        self.exe_path = exe_path
+        self.arg_values = [exe_path]
+        self.arg_descriptions = ['executable']
+        self.known_libs = {'exe': '@1'}
 
         # -- @@stapargs
         self.stap_args = []
@@ -192,6 +194,45 @@ class ScriptChewer(object):
                                self.src_line)
 
 
+    def _expr_exe(self, val):
+        '''
+        Return the path of the executable.
+        '''
+        return self.known_libs['exe']
+
+    def _expr_exeorlib(self, val):
+        '''
+        Take "@exeorlib:defaultbinary|bin/failover.so" and convert it to
+        a @1/@2/so on.  The magic is that we split the argument on '|' and
+        treat all but the last entry as possible binary names (sans dir).  If
+        the binary is amongst those explicitly named, we provide its path.  If
+        the binary was not named, then we fail over to using the library name
+        provided.  The idea is that some binaries (ex: thunderbird-bin) may
+        have libraries baked in (ex: libmozalloc.so) whereas some may not
+        (ex: xpcshell).
+
+        If the first character is a '!' it inverts the logic so that we
+        use the lib if the executable is named.
+        '''
+        negated = (val[0] == '!')
+        if negated:
+            val = val[1:]
+
+        bits = val.split('|')
+        binary_names = set(bits[:-1])
+        failover_lib = bits[-1]
+        exe_name = os.path.basename(self.exe_path)
+
+        # written for clarity, not conciseness
+        if negated:
+            if exe_name in binary_names:
+                return self._expr_lib(failover_lib)
+            return self.known_libs['exe']
+        else:
+            if exe_name in binary_names:
+                return self.known_libs['exe']
+            return self._expr_lib(failover_lib)
+
     def _expr_lib(self, val):
         '''
         Take "@@lib:bin/components/libgklayout.so" and convert it to @1/@2/...
@@ -208,7 +249,7 @@ class ScriptChewer(object):
         return rval
 
     def chew_script(self, path):
-        expr_re = re.compile(r'@@([^:]+):([^\)]+)([,\)])')
+        expr_re = re.compile(r'@@([^:]+):([^\)]*)([,\)])')
         def expr_helper(match):
             exprfunc = getattr(self, '_expr_%s' % (match.group(1),))
             return '%s%s' % (exprfunc(match.group(2)),match.group(3))
@@ -351,7 +392,7 @@ class MozMain(object):
     people!  (I will genericize this a little bit eventually).
     '''
 
-    usage = '''usage: %prog systemtapscript PID
+    usage = '''usage: %prog systemtapscript PID/executable [executable args]
     '''
 
     def _build_parser(self):
@@ -363,6 +404,8 @@ class MozMain(object):
         return parser
 
     def run(self):
+        print '!!!', os.getpid(), 'ARGS YOU GAVE ME:', repr(sys.argv)
+
         parser = self._build_parser()
         options, args = parser.parse_args()
 
@@ -373,14 +416,30 @@ class MozMain(object):
             return 1
 
         tapscript = args[0]
-        pid = int(args[1])
 
-        # use thie pid to get the binary and from that the objdir
-        proc_dir = '/proc/%d' % (pid,)
-        exe_path = os.path.realpath(os.path.join(proc_dir, 'exe'))
+        attachMode = args[1].isdigit()
+        # if the second argument is a number then it must be the PID
+        if attachMode:
+            naming_pid = pid = int(args[1])
+
+            # use thie pid to get the binary and from that the objdir
+            proc_dir = '/proc/%d' % (pid,)
+            exe_path = os.path.realpath(os.path.join(proc_dir, 'exe'))
+
+        # otherwise it is the path to the executable
+        else:
+            # use our invocation's process number as the naming pid...
+            naming_pid = os.getpid()
+            # Indicate we don't have a pid; this completely prevents us
+            #  from performing _any_ address translations for the time
+            #  being.  Eventually we could perhaps have probes that
+            #  handle the mapping events on the fly (from the log...)
+            pid = None
+            exe_path = args[1]
 
         # systemtap = linux
         pathparts = exe_path.split('/')
+
         # comm-central?
         if pathparts[-4] == 'mozilla':
             objdir = '/'.join(pathparts[:-4])
@@ -393,7 +452,7 @@ class MozMain(object):
 
         # -- BUILD the tapscript
         context = MozChewContext(objdir)
-        chewer = ScriptChewer(context)
+        chewer = ScriptChewer(context, exe_path)
         chewer.chew_script(tapscript)
         chewer.maybe_write_script(built_tapscript)
 
@@ -404,52 +463,175 @@ class MozMain(object):
             tmp_dir = options.rerunpath
             dorunrun = False
         else:
-            tmp_dir = '/tmp/chewtap-%d' % (pid,)
+            tmp_dir = '/tmp/chewtap-%d' % (naming_pid,)
             if os.path.exists(tmp_dir):
                 tmp_dir += '-%d' % (int(time.time()),)
             os.mkdir(tmp_dir)
 
             # we need the proc maps files to convert pointers
-            shutil.copyfile(os.path.join(proc_dir, 'maps'),
-                            os.path.join(tmp_dir, 'maps'))
+            if attachMode:
+                shutil.copyfile(os.path.join(proc_dir, 'maps'),
+                                os.path.join(tmp_dir, 'maps'))
         
         # -- RUN systemtap
         # - build args
         # assume the user is in the stapdev group
-        args = ['/usr/bin/stap', '-x', '%d' % (pid,)]
+        stap_args = ['/usr/bin/stap']
+
+        # add this python script's directory as an include dir for .h files.
+        if '/' in sys.argv[0]:
+            stap_args.extend(['-I', os.path.dirname(sys.argv[0])])
+
         # the script tells us what arguments it wants
-        args.extend(chewer.stap_args)
+        stap_args.extend(chewer.stap_args)
         if '-b' in chewer.stap_args:
-            args.append('-o %s' % (os.path.join(tmp_dir, 'bulk'),))
+            stap_args.append('-o %s' % (os.path.join(tmp_dir, 'bulk'),))
         # the built script
-        args.append(built_tapscript)
+        stap_args.append(built_tapscript)
         # the library paths
-        args.extend(chewer.arg_values)
+        stap_args.extend(chewer.arg_values)
         
         # - run
         # The expected use-case is to hit control-c when done, at which point
         #  we want to tell stap to close up shop.
         if dorunrun:
-            pope = subprocess.Popen(args, stdin=subprocess.PIPE)
+            # If we're not attaching, then we need to spin the dude up.  staprun
+            #  is being a jerk in terms of not screwing up the environment,
+            #  so we're doing it ourself.  We really want to constrain the
+            #  stap invocation to the right process, so we fork so we can know
+            #  the child pid before execing.  
+            if not attachMode:
+                # clean out our pipes prior to forking!
+                sys.stdout.flush()
+                sys.stderr.flush()
+
+                kid_read_pipe, parent_write_pipe = os.pipe()
+                kid_pid = pid = os.fork()
+                
+                if kid_pid == 0:
+                    # I am the child!  wait for our parent to tell us it's cool
+                    #  to invoke the thinger.
+                    while True:
+                        b = os.read(kid_read_pipe, 1)
+                        if b == 'x':
+                            break
+                        time.sleep(0.05)
+
+                    sys.stdout.write('@@@ read my 1 byte! execing other thing!\n')
+                    sys.stdout.flush()
+                    os.execv(args[1], args[1:])
+                    # THE PROCESS IS REPLACED BY THE ABOVE, NOTHING MORE EVER
+                    #  HAPPENS!
+                # (I am the parent process if I am here)
+
+                print '!!! forked off child', kid_pid
+            else:
+                kid_pid = None
+
+            # - spin up
+            stap_args.extend(['-x', '%d' % (pid,)])
+            print ''
+            print '!!! Invoking:', repr(stap_args)
+            print ''
+
+            # give it a pipe for standard input so it keeps its mitts off our
+            #  control-c.
+            # give it a pipe for stdout so we can tell when it has gotten going
+            pope = subprocess.Popen(stap_args,
+                                    stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT)
             try:
-                print 'Hit control-C to terminate the tapscript'
-                pope.communicate()
-                # if we get here, the user did not hit control-c and this means
-                #  either the tapscript terminated itself or there was a
-                #  problem...
-                if pope.poll():
-                    # problem!
-                    print 'Detected stap error result code, not post-processing'
-                    print 'Any results will be in', tmp_dir
-                    return pope.returncode
+                # - wait for 'stap' to successfully load the stuff
+                # (make the stdout non-blocking)
+                stap_stdout_fd = pope.stdout.fileno()
+                fl = fcntl.fcntl(stap_stdout_fd, fcntl.F_GETFL)
+                fcntl.fcntl(stap_stdout_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
+                # (keep reading stdout and printing the output until we see
+                #  the 'go' output or the process dies.)
+                buf = ''
+                while True:
+                    try:
+                        while True:
+                            nbuf = pope.stdout.read(1024)
+                            sys.stdout.write(nbuf)
+                            buf += nbuf                        
+                    except Exception, e:
+                        # this happens when we run out of things to read
+                        pass
+
+                    if buf.find('Pass 5: starting run.') != -1:
+                        break
+                    if pope.poll() is not None:
+                        # he died!
+                        print 'stap creation failed; killing child and leaving'
+                        if kid_pid:
+                            os.kill(kid_pid, 9)
+                        sys.exit(1)
+                    # truncate the buf on newline bounds
+                    idx_newline = buf.rfind('\n')
+                    if idx_newline != -1:
+                        buf = buf[idx_newline + 1:]
+
+                    # sorta busy-wait...
+                    time.sleep(0.1)
+
+                # Write to the child so it can begin its exciting life as being
+                #  obliterated and replaced by the actual executable we want
+                #  to run.
+                if not attachMode:
+                    # flush our output before telling the child so that our
+                    #  output serializes somewhat...
+                    print '!!!', os.getpid(), 'writing to child!'
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                    os.write(parent_write_pipe, 'x')
+
+                print '!!! Hit control-C to terminate the tapscript'
+                sys.stdout.flush()
+
+                
+                # wait for something to die off doing our own communicate()
+                #  style loop to make sure the stap invocation does not clog
+                #  itself up somehow.
+                while True:
+                    try:
+                        while True:
+                            buf = pope.stdout.read(1024)
+                            sys.stdout.write(buf)
+                            sys.stdout.flush()
+                    except Exception, e:
+                        pass
+
+                    dead_pid, dead_status = os.waitpid(-1, os.WNOHANG)
+                    if dead_pid == 0:
+                        time.sleep(0.1)
+                    elif dead_pid == kid_pid:
+                        print '!!! Happy conclusion!'
+                        sys.stdout.flush()
+                        break
+                    else: # it was stap!
+                        print '!!! stap died', dead_status, 'not post-processing'
+                        print 'Any results will be in', tmp_dir
+                        sys.stdout.flush()
+                        if kid_pid:
+                            os.kill(kid_pid, 9)
+                        sys.exit(1)
+
             except KeyboardInterrupt:
                 # (python2.6 required)
                 pope.terminate()
+                if kid_pid:
+                    os.kill(kid_pid, 9)
 
         # -- POST PROCESS
-        if chewer.postprocess_script:
+        if False and chewer.postprocess_script:
             # provide it with the address sym filter; assuming required.
-            procinfo = addrsymfilt.ProcInfo(pid, os.path.join(tmp_dir, 'maps'))
+            if attachMode:
+                procinfo = addrsymfilt.ProcInfo(pid, os.path.join(tmp_dir, 'maps'))
+            else:
+                procinfo = addrsymfilt.ProcInfo(None, None)
 
             search_path = [os.path.dirname(os.path.abspath(tapscript))]
             search_path.extend(sys.path)
@@ -471,5 +653,6 @@ class MozMain(object):
         return 0
 
 if __name__ == '__main__':
+    # change to the directory of the script if specified absolutely...
     m = MozMain()
     sys.exit(m.run())

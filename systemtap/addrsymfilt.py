@@ -126,12 +126,15 @@ class BinaryInfo(object):
 
 class ProcInfo(object):
     def __init__(self, pid, mappath=None):
-        self.pid = int(pid)
         #: Tuples of (low addr, high addr, adjust, binary).
         #:  The low address is inclusive, the high address is exclusive.
         self.ranges = []
         self.binaries_by_path = {}
 
+        if pid is None:
+            self.pid = None
+            return
+        self.pid = int(pid)
         self._read_maps(mappath)
 
     def _read_maps(self, mappath=None):
