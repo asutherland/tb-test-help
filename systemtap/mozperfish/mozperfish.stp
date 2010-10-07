@@ -113,6 +113,32 @@
 //@@postprocess:perfishpostproc
 
 ////////////////////////////////////////////////////////////////////////////////
+//////// Memory Map Support
+
+// Add logic to copy /proc/PID/maps to the output directory on entry to main
+//  in case we are doing dynamic execution.
+
+global kickoff_map_copy;
+probe process(@@exe:).function("main") {
+  kickoff_map_copy = gettimeofday_ms();
+  printf("triggering copy!\n");
+  system(sprintf("cp /proc/%d/maps /tmp/chewtap-%d/maps", pid(), pid()));
+}
+
+// egregiously bad attempt to keep the process alive long enough for the
+//  copy above to complete.
+probe process(@@exe:).function("main").return {
+  now = gettimeofday_ms();
+  delayed = 0;
+  while (now - kickoff_map_copy < 1000) {
+    now = gettimeofday_ms();
+    delayed = 1;
+  }
+  printf("\n!!! DELAYED: %d\n\n", delayed);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
 //////// Shared State
 
 /** maps [thread] to current thread depth */
@@ -829,7 +855,9 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
 //@@lineseek:JS_SetOptions(cx, oldOpts);
 probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   // fval is a jsval... get the pointer out of it
-  data = script_info_from_jsfun($fval->asPtr);
+  printf("fval->asBits: %x\n", $fval->asBits);
+  printf("class name: %s\n", jsobj_class_name($fval->asBits & 0x00007FFFFFFFFFFF));
+  data = script_info_from_jsfun($fval->asBits & 0x00007FFFFFFFFFFF);
   track_leave(0x1040, data);
 }
 
@@ -863,48 +891,78 @@ global jsfun_cache_func_name;
 global jsfun_cache_filename;
 global jsfun_cache_line;
 
+function jsobj_class_name(jsobj) {
+  return user_string(@cast(jsobj, "JSObject", @@lib:bin/libxul.so)->clasp->name);
+}
+
+function jsstr_to_string(jsstr) {
+  if (!jsstr)
+    return "<void>";
+  if (jsstr == 0xa5a5a5a5a5a5a5a5)
+    return "<freed read bad>";
+
+  // the flag bits are the lower order bits; shift FLAGS_LENGTH_SHIFT.
+  lenAndFlags = @cast(jsstr, "JSString", @@lib:bin/libxul.so)->mLengthAndFlags;
+  if (lenAndFlags & 0xf) {
+    if (lenAndFlags & 0x3 == 0) {
+      if (lenAndFlags & 0x4 == 0x4)
+        return "<atomized>";
+      else if (lenAndFlags & 0x8 == 0x8)
+        return "<mutable>";
+    }
+    else if (lenAndFlags & 0x3 == 1)
+      return "<dependent>";
+    else if (lenAndFlags & 0x3 == 2)
+      return "<interior node>";
+    else if (lenAndFlags & 0x3 == 3)
+      return "<top node>";
+  }
+  len = lenAndFlags >> 4;
+  if (!len)
+    return "";
+
+  cp = @cast(jsstr, "JSString", @@lib:bin/libxul.so)->mChars;
+  printf("string grab: %x: %x\n", cp, user_long(cp));
+  return user_u16_string(cp, len);
+}
+
 function jsval_to_string(jsval) {
+  tag = (jsval >> 47) & 0xf;
   if (jsval == 0) {
     return "null";
   }
   // integer!
-  else if (jsval&0x1) {
-    return sprintf("%d", jsval >> 1)
+  else if (tag == 0x1) {
+    return sprintf("%d", jsval & 0xffffffff)
   }
-
-  tag = jsval & 0x7;
   // double
-  if (tag == 0x2) {
-    //return sprintf("%f",
-    //               @cast(jsval & ~0x7, "jsdouble", @@lib:bin/libxul.so));
+  else if (tag == 0x0) {
+    //return sprintf("%f", jsval);
     return "<double>";
   }
   // string
-  else if (tag == 0x4) {
-    jsval = jsval & ~0x7;
-    // ugh, systemtap's cast operation is failing to believe that JSString
-    //  is actually a type, so we comment out the old and hack in the new.
-    len = @cast(jsval, "JSString", @@lib:bin/libxul.so)->mLengthAndFlags & 0x1ff;
-    cp = @cast(jsval, "JSString", @@lib:bin/libxul.so)->mChars;
-
-    // (first entry is the size_t mLengthAndFlags)
-    //len = @cast(jsval, "size_t", @@lib:bin/libxul.so) & 0x1ff;
-    // second entry is the unioned jschar *
-    //cp = @cast(jsval + 8, "size_t", @@lib:bin/libxul.so);
-
-    return user_u16_string(cp, len);
+  else if (tag == 0x5) {
+    // mask off the magic double-boxing wrapped
+    return jsstr_to_string(jsval & 0x00007FFFFFFFFFFF);
   }
   // special
-  else if (tag == 0x6) {
-    thing = jsval >> 3;
-    if (thing == 0)
-      return "false";
-    else if (thing == 1)
+  else if (tag == 0x2) {
+    return "undefined";
+  }
+  // boolean
+  else if (tag == 0x3) {
+    if (jsval & 0xffffffff)
       return "true";
-    else if (thing == 2)
-      return "undefined";
     else
-      return "unknown special";
+      return "false";
+  }
+  // null
+  else if (tag == 0x6) {
+    return "null";
+  }
+  // magic
+  else if (tag == 0x4) {
+    return "<magic>";
   }
   return sprintf("<??? %p>", jsval);
 }
@@ -932,7 +990,7 @@ function script_info_from_jsfun(jsfun) {
       atom = @cast(jsfun, "JSFunction", @@lib:bin/libxul.so)->atom;
     }
 
-    jsfun_cache_func_name[jsfun] = jsval_to_string(atom);
+    jsfun_cache_func_name[jsfun] = jsstr_to_string(atom);
 
     funflags = @cast(jsfun, "JSFunction", @@lib:bin/libxul.so)->flags;
 

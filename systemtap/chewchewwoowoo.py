@@ -456,6 +456,40 @@ class MozMain(object):
         chewer.chew_script(tapscript)
         chewer.maybe_write_script(built_tapscript)
 
+        # -- FORK if running and not in attached mode
+        if options.rerunpath:
+            dorunrun = False
+
+        if dorunrun:
+            if not attachMode:
+                # clean out our pipes prior to forking!
+                sys.stdout.flush()
+                sys.stderr.flush()
+
+                kid_read_pipe, parent_write_pipe = os.pipe()
+                naming_pid = kid_pid = pid = os.fork()
+                
+                if kid_pid == 0:
+                    # I am the child!  wait for our parent to tell us it's cool
+                    #  to invoke the thinger.
+                    while True:
+                        b = os.read(kid_read_pipe, 1)
+                        if b == 'x':
+                            break
+                        time.sleep(0.05)
+
+                    sys.stdout.write('@@@ read my 1 byte! execing other thing!\n')
+                    sys.stdout.flush()
+                    os.execv(args[1], args[1:])
+                    # THE PROCESS IS REPLACED BY THE ABOVE, NOTHING MORE EVER
+                    #  HAPPENS!
+                # (I am the parent process if I am here)
+
+                print '!!! forked off child', kid_pid
+            else:
+                kid_pid = None
+
+
         # -- FETCH required data about the running process.
         # we need a temporary directory to hold our data for this invocation
         
@@ -500,33 +534,6 @@ class MozMain(object):
             #  so we're doing it ourself.  We really want to constrain the
             #  stap invocation to the right process, so we fork so we can know
             #  the child pid before execing.  
-            if not attachMode:
-                # clean out our pipes prior to forking!
-                sys.stdout.flush()
-                sys.stderr.flush()
-
-                kid_read_pipe, parent_write_pipe = os.pipe()
-                kid_pid = pid = os.fork()
-                
-                if kid_pid == 0:
-                    # I am the child!  wait for our parent to tell us it's cool
-                    #  to invoke the thinger.
-                    while True:
-                        b = os.read(kid_read_pipe, 1)
-                        if b == 'x':
-                            break
-                        time.sleep(0.05)
-
-                    sys.stdout.write('@@@ read my 1 byte! execing other thing!\n')
-                    sys.stdout.flush()
-                    os.execv(args[1], args[1:])
-                    # THE PROCESS IS REPLACED BY THE ABOVE, NOTHING MORE EVER
-                    #  HAPPENS!
-                # (I am the parent process if I am here)
-
-                print '!!! forked off child', kid_pid
-            else:
-                kid_pid = None
 
             # - spin up
             stap_args.extend(['-x', '%d' % (pid,)])
@@ -555,6 +562,8 @@ class MozMain(object):
                     try:
                         while True:
                             nbuf = pope.stdout.read(1024)
+                            if not nbuf:
+                                break
                             sys.stdout.write(nbuf)
                             buf += nbuf                        
                     except Exception, e:
@@ -599,6 +608,8 @@ class MozMain(object):
                     try:
                         while True:
                             buf = pope.stdout.read(1024)
+                            if not buf:
+                                break
                             sys.stdout.write(buf)
                             sys.stdout.flush()
                     except Exception, e:
@@ -610,6 +621,7 @@ class MozMain(object):
                     elif dead_pid == kid_pid:
                         print '!!! Happy conclusion!'
                         sys.stdout.flush()
+                        pope.terminate()
                         break
                     else: # it was stap!
                         print '!!! stap died', dead_status, 'not post-processing'
@@ -626,12 +638,9 @@ class MozMain(object):
                     os.kill(kid_pid, 9)
 
         # -- POST PROCESS
-        if False and chewer.postprocess_script:
+        if options.rerunpath and chewer.postprocess_script:
             # provide it with the address sym filter; assuming required.
-            if attachMode:
-                procinfo = addrsymfilt.ProcInfo(pid, os.path.join(tmp_dir, 'maps'))
-            else:
-                procinfo = addrsymfilt.ProcInfo(None, None)
+            procinfo = addrsymfilt.ProcInfo(pid, os.path.join(tmp_dir, 'maps'))
 
             search_path = [os.path.dirname(os.path.abspath(tapscript))]
             search_path.extend(sys.path)
