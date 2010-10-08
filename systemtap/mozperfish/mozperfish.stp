@@ -1036,8 +1036,6 @@ function script_info_from_jsfunval(jsfunval) {
  */
 function script_info_from_jsfunobj(jsfunobj) {
   // it is not nunboxed; it is a directly usable pointer!
-  printf("\ntrying to get function info from class %s\n",
-         jsobj_class_name(jsfunobj));
   return script_info_from_jsfun(
     @cast(jsfunobj, "JSObject", @@lib:bin/libxul.so)->fslots[0]->data->asPtr);
 }
