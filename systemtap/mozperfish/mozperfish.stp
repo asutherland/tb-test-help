@@ -1,7 +1,7 @@
 /* *****************************************************************************
  * OVERVIEW
  *
- * Generate performance (time + memory usage) JSON output from the mozilla-1.9.2
+ * Generate performance (time + memory usage) JSON output from the mozilla-2.0
  *  platform.  This used to be biased to produce GWT Speed Tracer output but
  *  that was abandoned when it became clear that our purposes were not aligned
  *  with its purpose.  I'll try and keep things aligned until there are reasons
@@ -15,8 +15,6 @@
  *
  * General Speed Tracer documentation is here:
  * http://code.google.com/webtoolkit/speedtracer/
- *
- * The key stap arguments mean:
  *
  * This file is made available under the standard MPL1.1/GPL2/LGPL2.1 license.
  *  Its output are not covered by the license; they are yours for the taking!
@@ -118,7 +116,7 @@
 // Add logic to copy /proc/PID/maps to the output directory on entry to main
 //  in case we are doing dynamic execution.
 
-probe process(@@exe:).function("main") {
+probe process(@@lib:bin/libxul.so).function("NS_LogInit_P") {
   printf("triggering copy!\n");
   system(sprintf("cp /proc/%d/maps /tmp/chewtap-%d/maps", pid(), pid()));
 }
@@ -598,8 +596,40 @@ probe process(@@lib:bin/libxul.so).function("PresShell::Paint").return {
 ////////////////////////////////////////////////////////////////////////////////
 //// TIMER_INSTALLED : 5
 
+
+// === nsITimer
+
+//@@file:mozilla/xpcom/threads/nsTimerImpl.cpp
+//@@method:nsTimerImpl::InitCommon
+//@@lineseek:nsresult nsTimerImpl::InitCommon(PRUint32 aType, PRUint32 aDelay)
+//@@lineseek:SetDelayInternal(aDelay);
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
+  now = gettimeofday_ns();
+  ctx = tid();
+  depth = t_depth[ctx];
+
+  printf("{\"tid\":%d,\"depth\":%d,\"type\":5,\"time\":%d,\"data\":{\"timerId\":%d,\"singleShot\":true,\"timeout\":%d}}\n",
+         ctx, depth,
+         now - dawn_of_time, $this, $aDelay);
+}
+
+
 ////////////////////////////////////////////////////////////////////////////////
 //// TIMER_CLEARED : 6
+
+//@@file:mozilla/xpcom/threads/nsTimerImpl.cpp
+//@@method:nsTimerImpl::Cancel
+//@@lineseek:NS_IMETHODIMP nsTimerImpl::Cancel()
+//@@lineseek:mCanceled = PR_TRUE;
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
+  now = gettimeofday_ns();
+  ctx = tid();
+  depth = t_depth[ctx];
+
+  printf("{\"tid\":%d,\"depth\":%d,\"type\":5,\"time\":%d,\"data\":{\"timerId\":%d}}\n",
+         ctx, depth,
+         now - dawn_of_time, $this);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 //// TIMER_FIRED : 7
@@ -756,7 +786,29 @@ probe process(@@lib:bin/libxul.so).function("js_GC").return {
 //////// Mozilla Made-Up Events
 
 ////////////////////////////////////////////////////////////////////////////////
-//// Event Loop : 0x1000
+//// Event Loop : 0x1000+
+
+// === Event scheduling (0x1001 = 4097)
+
+// (We are picking the location after which synchronous dispatches have already
+//  been handled and bailed on.)
+
+//@@file:mozilla/xpcom/threads/nsThread.cpp
+//@@method:nsThread::Dispatch
+//@@lineseek:nsThread::Dispatch(nsIRunnable *event, PRUint32 flags)
+//@@lineseek:return PutEvent(event);
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
+  now = gettimeofday_ns();
+  ctx = tid();
+  depth = t_depth[ctx];
+
+  printf("{\"tid\":%d,\"depth\":%d,\"type\":4097,\"time\":%d,\"data\":{\"eventId\":%d}}\n",
+         ctx, depth,
+         now - dawn_of_time, $event);
+}
+
+
+// === Event execution (0x1000 = 4096)
 
 //@@file:mozilla/xpcom/threads/nsThread.cpp
 //@@method:nsThread::ProcessNextEvent
@@ -771,7 +823,8 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   else
     eventAddr = 0;
 
-  data = sprintf("\"scriptName\":\":!vt:%x\",\"scriptLine\":0", eventAddr);
+  data = sprintf("\"eventId\":%d,\"scriptName\":\":!vt:%x\",\"scriptLine\":0",
+                 rawPtr, eventAddr);
   track_enter(0x1000, data);
 }
 
@@ -783,6 +836,7 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
 probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   track_leave(0x1000, "");
 }
+
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -869,6 +923,14 @@ probe process(@@lib:bin/libxul.so).function("nsProxyObjectCallInfo::Run").return
 
 
 ////////////////////////////////////////////////////////////////////////////////
+//// mozStorage async : 0x1080
+
+// I think the standard nsIEventTarget::dispatch logic should infer causality
+//  sufficiently to start with, so do not explicitly handle this for now.  We
+//  may end up caring 
+
+
+////////////////////////////////////////////////////////////////////////////////
 //////// Common JS extraction stuff
 
 global jsfun_cache_func_name;
@@ -907,7 +969,6 @@ function jsstr_to_string(jsstr) {
     return "";
 
   cp = @cast(jsstr, "JSString", @@lib:bin/libxul.so)->mChars;
-  printf("string grab: %x: %x\n", cp, user_long(cp));
   return user_u16_string(cp, len);
 }
 

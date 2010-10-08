@@ -9,7 +9,8 @@
 #       {
 #         events: [],
 #         mevents: []
-#       }
+#       },
+#       ... more threads ...
 #     ],
 #     lastEventEndsAtTime: 0,
 #   }
@@ -17,6 +18,10 @@
 import json, os, os.path
 
 class ProcContext(object):
+    '''
+    A simple context object that provides known attributes and generic helper
+    functions.
+    '''
     def __init__(self, srcdir, procinfo):
         self.srcdir = srcdir
         self.procinfo = procinfo
@@ -48,6 +53,10 @@ class ProcContext(object):
         json.dump(json_obj, f)
         f.close()
 
+EV_EVENT_LOOP = 0x1000
+
+REPARENTING_EVENTS = set([EV_EVENT_LOOP])
+
 class ThreadProc(object):
     '''
     Tracks per-thread information.
@@ -66,13 +75,50 @@ class ThreadProc(object):
         # each elment is (depth, list of items at that depth)
         self.stack = [(0, ())]
 
+        #: Structured timeline events reflecting the actual call stack structure
+        #   and accordingly with non-overlapping timelines.
         self.events = []
+        #: Normalized event-loop events as root events (event if they are nested
+        #   inside an existing event loop invocation) as top-level.  Because
+        #   we are still using a native stack, re-parented events will be
+        #   entirely contained time-wise by a preceding event.
+        #  This is computed by transforming the contents of events as a
+        #   post-processing pass.
+        self.levents = None
+        #: memory events; exist outside of the structured event perspective
         self.mevents = []
 
+    def _derive_event_loop_events(self):
+        self.levents = levents = []
+
+        def transform_event(event):
+            '''
+            Copy the event and its children; if a child should be reparented to
+            the top-level, contribute it to levents instead of the event we are
+            currently processing.
+            '''
+            clone = event.copy()
+            # bail if it has no children and so there is nothing more to do
+            if ('children' not in event) or (len(event['children']) == 0):
+                return clone
+            # clone the children, handling reparenting as needed
+            clone['children'] = clone_kids = []
+            for kid_event in clone['children']:
+                if kid_event['type'] in REPARENTING_EVENTS:
+                    levents.append(transform_event(kid_event))
+                else:
+                    clone_kids.append(transform_event(kid_event))
+            return clone
+
+        for top_level_event in self.events:
+            levents.append(transform_event(top_level_event))
+
     def build_json_obj(self):
+        self._derive_event_loop_events()
         return {
             'tid': self.tid,
             'events': self.events,
+            'levents': self.levents,
             'mevents': self.mevents
             }
 
