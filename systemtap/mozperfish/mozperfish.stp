@@ -1036,6 +1036,8 @@ function script_info_from_jsfunval(jsfunval) {
  */
 function script_info_from_jsfunobj(jsfunobj) {
   // it is not nunboxed; it is a directly usable pointer!
+  printf("\ntrying to get function info from class %s\n",
+         jsobj_class_name(jsfunobj));
   return script_info_from_jsfun(
     @cast(jsfunobj, "JSObject", @@lib:bin/libxul.so)->fslots[0]->data->asPtr);
 }
@@ -1050,12 +1052,17 @@ function script_info_from_jsfun(jsfun) {
       atom = @cast(jsfun, "JSFunction", @@lib:bin/libxul.so)->atom;
     }
 
-    jsfun_cache_func_name[jsfun] = jsstr_to_string(atom);
-
-    funflags = @cast(jsfun, "JSFunction", @@lib:bin/libxul.so)->flags;
+    // both JSFunction and JSObject define a 'flags' field; systemtap appears
+    //  to favor JSObject's, so we try and outwit it by getting the address of
+    //  nargs which immediately precedes the field, add 2, and read the short
+    funflags = user_short(
+                 &@cast(jsfun, "JSFunction", @@lib:bin/libxul.so)->nargs +
+                 2);
 
     // interpreted?
     if ((funflags & 0xc000) >= 0x4000) {
+      jsfun_cache_func_name[jsfun] = jsstr_to_string(atom);
+
       script = @cast(jsfun, "JSFunction", @@lib:bin/libxul.so)->u->i->script;
       if (script) {
         jsfun_cache_filename[jsfun] =
@@ -1069,10 +1076,25 @@ function script_info_from_jsfun(jsfun) {
         jsfun_cache_line[jsfun] = 1;
       }
     }
+// XXX this is a systemtap dwarf probabilistic nightmare; disable.
+/*
+    else if (funflags & 0x2000) {
+      jsfun_cache_filename[jsfun] = "<trace>";
+      jsfun_cache_func_name[jsfun] = atom ? jsstr_to_string(atom) :
+        sprintf(":!vt:%x",
+                @cast(jsfun, "JSFunction",
+                      @@lib:bin/libxul.so)->u->n->trcinfo->native);
+        
+      jsfun_cache_line[jsfun] = 1;
+    }
+*/
     else { // native
       // XXX emit pointer with translation decorations.
       jsfun_cache_filename[jsfun] = "<native>";
-      jsfun_cache_line[jsfun] = 1;
+      jsfun_cache_func_name[jsfun] = atom ? jsstr_to_string(atom) :
+        sprintf(":!vt:%x",
+                @cast(jsfun, "JSFunction", @@lib:bin/libxul.so)->u->n->native);
+      jsfun_cache_line[jsfun] = funflags;
     }
   }
   // XXX C string fusion across multiple lines stopped working...

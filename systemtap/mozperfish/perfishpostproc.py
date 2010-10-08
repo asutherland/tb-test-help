@@ -103,7 +103,7 @@ class ThreadProc(object):
                 return clone
             # clone the children, handling reparenting as needed
             clone['children'] = clone_kids = []
-            for kid_event in clone['children']:
+            for kid_event in event['children']:
                 if kid_event['type'] in REPARENTING_EVENTS:
                     levents.append(transform_event(kid_event))
                 else:
@@ -111,6 +111,9 @@ class ThreadProc(object):
             return clone
 
         for top_level_event in self.events:
+            # skip synthetic inter-space events
+            if top_level_event['type'] is None:
+                continue
             levents.append(transform_event(top_level_event))
 
     def build_json_obj(self):
@@ -148,13 +151,14 @@ class ThreadProc(object):
             self.mevents.append(obj)
             return
 
-        if 'duration' in obj:
-            obj['duration'] *= 0.000001
-        else:
+        if obj_depth is None:
             # this is a synthetic inter-space event
             self.top_event_needing_fixup = obj
             self.events.append(obj)
             return
+
+        if 'duration' in obj:
+            obj['duration'] *= 0.000001
 
         data = obj['data']
         # - perform address translation on potentially affected fields
@@ -188,7 +192,10 @@ class ThreadProc(object):
                     self.top_event_needing_fixup['duration'] = (
                         obj['time'] - self.top_event_needing_fixup['time'])
                     self.top_event_needing_fixup = None
-                self.prev_top_end_time = obj['time'] + obj['duration']
+                if 'duration' in obj:
+                    self.prev_top_end_time = obj['time'] + obj['duration']
+                else:
+                    self.prev_top_end_time = obj['time']
                 self.events.append(obj)
             else:
                 cur_stack.append(obj)

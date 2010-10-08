@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html style="height: 100%; padding: 0; margin: 0; border: 0; overflow: none;">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <title>mozperfish causal chainer</title>
+    <script type="text/javascript">
+      var console;
+      if (!console)
+        console = {
+          log: function() {},
+          error: function() {},
+          info: function() {},
+          warn: function() {},
+      };
+      function dump(aMsgWithNewline) {
+        console.log(aMsgWithNewline.replace("\n", "", "g"));
+      }
+    </script>
+    <script type="text/javascript" src="/cjs/requirejs/require.js"></script>
+  <script>
+    require(
+      {
+        baseUrl: "/cjs/",
+        paths: {
+          "requirejs": "requirejs/build/convert/commonjs",
+          "mozperfish": "mozperfish/lib/mozperfish",
+          "narscribblus": "narscribblus/lib/narscribblus",
+          "narscribblus-plat": "narscribblus/lib-requirejs/narscribblus-plat",
+          "wmsy": "wmsy/lib/wmsy/",
+        },
+      },
+      ["requirejs/global-es5", "mozperfish/go-causal-ui"],
+      function(es5, mainModule) {
+        mainModule.main("perfdata.json");
+      }
+    );
+  </script>
+  </head>
+<body id="body">
+</body>
+</html>
