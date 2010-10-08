@@ -654,7 +654,7 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   if (scriptObj) {
     // the scriptObj, although void, is really a JSObject* of variety
     //  JSFunction*, or at least we are assuming that :)
-    data = script_info_from_jsfun(scriptObj);
+    data = script_info_from_jsfunobj(scriptObj);
     track_leave(15, data);
   }
   else {
@@ -780,8 +780,9 @@ probe process(@@lib:bin/libxul.so).function("js_GC").return {
 probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   // $event->mRawPtr's value is the address of an instance on the heap
   // The first pointer at that location is the pointer to the vtable.
-  if ($event->mRawPtr)
-    eventAddr = get_vtbl_ptr_from_instance($event->mRawPtr);
+  rawPtr = $event->mRawPtr;
+  if (rawPtr)
+    eventAddr = get_vtbl_ptr_from_instance(rawPtr);
   else
     eventAddr = 0;
 
@@ -857,7 +858,7 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   // fval is a jsval... get the pointer out of it
   printf("fval->asBits: %x\n", $fval->asBits);
   printf("class name: %s\n", jsobj_class_name($fval->asBits & 0x00007FFFFFFFFFFF));
-  data = script_info_from_jsfun($fval->asBits & 0x00007FFFFFFFFFFF);
+  data = script_info_from_jsfunobj($fval->asBits & 0x00007FFFFFFFFFFF);
   track_leave(0x1040, data);
 }
 
@@ -898,7 +899,8 @@ function jsobj_class_name(jsobj) {
 function jsstr_to_string(jsstr) {
   if (!jsstr)
     return "<void>";
-  if (jsstr == 0xa5a5a5a5a5a5a5a5)
+  if (jsstr == 0xa5a5a5a5a5a5a5a5 ||
+      jsstr == 0x25a5a5a5a5a5)
     return "<freed read bad>";
 
   // the flag bits are the lower order bits; shift FLAGS_LENGTH_SHIFT.
@@ -931,21 +933,16 @@ function jsval_to_string(jsval) {
   if (jsval == 0) {
     return "null";
   }
-  // integer!
-  else if (tag == 0x1) {
-    return sprintf("%d", jsval & 0xffffffff)
-  }
   // double
   else if (tag == 0x0) {
     //return sprintf("%f", jsval);
     return "<double>";
   }
-  // string
-  else if (tag == 0x5) {
-    // mask off the magic double-boxing wrapped
-    return jsstr_to_string(jsval & 0x00007FFFFFFFFFFF);
+  // integer!
+  else if (tag == 0x1) {
+    return sprintf("%d", jsval & 0xffffffff)
   }
-  // special
+  // undefined
   else if (tag == 0x2) {
     return "undefined";
   }
@@ -956,13 +953,22 @@ function jsval_to_string(jsval) {
     else
       return "false";
   }
+  // magic
+  else if (tag == 0x4) {
+    return "<magic>";
+  }
+  // string
+  else if (tag == 0x5) {
+    // mask off the magic double-boxing wrapped
+    return jsstr_to_string(jsval & 0x00007FFFFFFFFFFF);
+  }
   // null
   else if (tag == 0x6) {
     return "null";
   }
-  // magic
-  else if (tag == 0x4) {
-    return "<magic>";
+  else if (tag == 0x7) {
+    objptr = jsval & 0x00007FFFFFFFFFFF;
+    return sprintf("<jsobj %s %p>", jsobj_class_name(objptr), objptr);
   }
   return sprintf("<??? %p>", jsval);
 }
@@ -979,6 +985,16 @@ function script_info_from_jsfunval(jsfunval) {
   return script_info_from_jsfun(jsfun);
 }
 */
+
+/**
+ * We are given an object of class type JSFunction where the private slot holds
+ *  the actual JSFunction instance.
+ */
+function script_info_from_jsfunobj(jsfunobj) {
+  // it is not nunboxed; it is a directly usable pointer!
+  return script_info_from_jsfun(
+    @cast(jsfunobj, "JSObject", @@lib:bin/libxul.so)->fslots[0]->data->asPtr);
+}
 
 function script_info_from_jsfun(jsfun) {
   if (jsfun_cache_line[jsfun] == 0) {
