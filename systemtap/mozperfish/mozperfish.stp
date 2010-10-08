@@ -118,25 +118,10 @@
 // Add logic to copy /proc/PID/maps to the output directory on entry to main
 //  in case we are doing dynamic execution.
 
-global kickoff_map_copy;
 probe process(@@exe:).function("main") {
-  kickoff_map_copy = gettimeofday_ms();
   printf("triggering copy!\n");
   system(sprintf("cp /proc/%d/maps /tmp/chewtap-%d/maps", pid(), pid()));
 }
-
-// egregiously bad attempt to keep the process alive long enough for the
-//  copy above to complete.
-probe process(@@exe:).function("main").return {
-  now = gettimeofday_ms();
-  delayed = 0;
-  while (now - kickoff_map_copy < 1000) {
-    now = gettimeofday_ms();
-    delayed = 1;
-  }
-  printf("\n!!! DELAYED: %d\n\n", delayed);
-}
-
 
 ////////////////////////////////////////////////////////////////////////////////
 //////// Shared State
@@ -856,8 +841,6 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
 //@@lineseek:JS_SetOptions(cx, oldOpts);
 probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   // fval is a jsval... get the pointer out of it
-  printf("fval->asBits: %x\n", $fval->asBits);
-  printf("class name: %s\n", jsobj_class_name($fval->asBits & 0x00007FFFFFFFFFFF));
   data = script_info_from_jsfunobj($fval->asBits & 0x00007FFFFFFFFFFF);
   track_leave(0x1040, data);
 }
