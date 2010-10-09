@@ -133,8 +133,14 @@ global td_pre_data;
 
 global dawn_of_time;
 
+/** global sequence counter to counter timer betrayals. */
+global gseq;
+/** maps [thread, depth] to global seq */
+global td_seq;
+
 probe begin {
   dawn_of_time = gettimeofday_ns();
+  gseq = 0;
 }
 
 function track_enter(eventCode, pre_data) {
@@ -155,6 +161,7 @@ function track_enter(eventCode, pre_data) {
 
   td_start[ctx, depth] = now;
   td_pre_data[ctx, depth] = pre_data;
+  td_seq[ctx, depth] = gseq++;
 
   //printf("enter: %d @ %d ... %s\n", eventCode, depth, pre_data);
 }
@@ -171,14 +178,15 @@ function track_leave(eventCode, data) {
   else {
     start = td_start[ctx, depth];
     pre_data = td_pre_data[ctx, depth];
+    seq = td_seq[ctx, depth];
 
     duration = now - start;
 
     //printf("exit: %d @ %d ... %s\n", eventCode, depth, data);
 
     // XXX C string fusion over multiple lines stopped working?
-    printf("{\"tid\":%d,\"depth\":%d,\"type\":%d,\"time\":%d,\"duration\":%d,\"data\":{%s%s},\"mem\":{",
-           ctx, depth, eventCode,
+    printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":%d,\"time\":%d,\"duration\":%d,\"data\":{%s%s},\"mem\":{",
+           ctx, seq, depth, eventCode,
            start - dawn_of_time, duration, pre_data, data);
     if (td_any_alloc[ctx, depth])
       mem_stats_data_string(ctx, depth);
@@ -607,9 +615,10 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   now = gettimeofday_ns();
   ctx = tid();
   depth = t_depth[ctx];
+  seq = gseq++;
 
-  printf("{\"tid\":%d,\"depth\":%d,\"type\":5,\"time\":%d,\"data\":{\"timerId\":%d,\"singleShot\":true,\"timeout\":%d}}\n",
-         ctx, depth,
+  printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":5,\"time\":%d,\"data\":{\"timerId\":%d,\"singleShot\":true,\"timeout\":%d}}\n",
+         ctx, seq, depth,
          now - dawn_of_time, $this, $aDelay);
 }
 
@@ -625,9 +634,10 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   now = gettimeofday_ns();
   ctx = tid();
   depth = t_depth[ctx];
+  seq = gseq++;
 
-  printf("{\"tid\":%d,\"depth\":%d,\"type\":5,\"time\":%d,\"data\":{\"timerId\":%d}}\n",
-         ctx, depth,
+  printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":5,\"time\":%d,\"data\":{\"timerId\":%d}}\n",
+         ctx, seq, depth,
          now - dawn_of_time, $this);
 }
 
@@ -790,21 +800,23 @@ probe process(@@lib:bin/libxul.so).function("js_GC").return {
 
 // === Event scheduling (0x1001 = 4097)
 
-// (We are picking the location after which synchronous dispatches have already
-//  been handled and bailed on.)
+// We place ourselves in the PutEvent logic so that we cover the synchronous
+//  and normal cases.  We also put ourselves after the out of memory explosion
+//  so we can be sure that it stuck.
 
 //@@file:mozilla/xpcom/threads/nsThread.cpp
-//@@method:nsThread::Dispatch
-//@@lineseek:nsThread::Dispatch(nsIRunnable *event, PRUint32 flags)
-//@@lineseek:return PutEvent(event);
+//@@method:nsThread::PutEvent
+//@@lineseek:nsThread::PutEvent(nsIRunnable *event)
+//@@lineseek:nsCOMPtr<nsIThreadObserver> obs = GetObserver();
 probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   now = gettimeofday_ns();
   ctx = tid();
   depth = t_depth[ctx];
+  seq = gseq++;
 
-  printf("{\"tid\":%d,\"depth\":%d,\"type\":4097,\"time\":%d,\"data\":{\"eventId\":%d}}\n",
-         ctx, depth,
-         now - dawn_of_time, $event);
+  printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":4097,\"time\":%d,\"data\":{\"eventId\":%d,\"threadId\":%d}}\n",
+         ctx, seq, depth,
+         now - dawn_of_time, $event, $this);
 }
 
 
@@ -823,8 +835,8 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   else
     eventAddr = 0;
 
-  data = sprintf("\"eventId\":%d,\"scriptName\":\":!vt:%x\",\"scriptLine\":0",
-                 rawPtr, eventAddr);
+  data = sprintf("\"eventId\":%d,\"threadId\":%d,\"scriptName\":\":!vt:%x\",\"scriptLine\":0",
+                 rawPtr, $this, eventAddr);
   track_enter(0x1000, data);
 }
 

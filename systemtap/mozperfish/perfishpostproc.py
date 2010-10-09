@@ -91,13 +91,15 @@ class ThreadProc(object):
     def _derive_event_loop_events(self):
         self.levents = levents = []
 
-        def transform_event(event):
+        def transform_event(event, isTop=False):
             '''
             Copy the event and its children; if a child should be reparented to
             the top-level, contribute it to levents instead of the event we are
             currently processing.
             '''
             clone = event.copy()
+            if isTop:
+                levents.append(clone)
             # bail if it has no children and so there is nothing more to do
             if ('children' not in event) or (len(event['children']) == 0):
                 return clone
@@ -114,7 +116,7 @@ class ThreadProc(object):
             # skip synthetic inter-space events
             if top_level_event['type'] is None:
                 continue
-            levents.append(transform_event(top_level_event))
+            transform_event(top_level_event, True)
 
     def build_json_obj(self):
         self._derive_event_loop_events()

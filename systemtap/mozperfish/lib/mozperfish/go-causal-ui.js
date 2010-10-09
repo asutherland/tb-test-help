@@ -38,13 +38,79 @@
 require.def("mozperfish/go-causal-ui",
   [
     "exports",
+    "mozperfish/causal-chainer",
+    "mozperfish/pv-layout-timey",
   ],
   function(
-    exports
+    exports,
+    mod_chainer,
+    _timey
   ) {
+
+function visChainLinks(chainer) {
+  var nodes = [];
+  var links = [];
+  
+  // depth-first traversal
+  function walkLink(link) {
+    if ("index" in link)
+      return;
+    link.index = nodes.length;
+    nodes.push(link);
+    
+    for (var i = 0; i < link.outlinks.length; i++) {
+      var other = link.outlinks[i];
+      walkLink(other);
+      links.push({
+        source: link.index,
+        target: other.index,
+      });
+    }
+  }
+  for (var i = 0; i < chainer.rootLinks.length; i++) {
+    walkLink(chainer.rootLinks[i]);
+  }
+  
+  var WIDTH = 1024, HEIGHT = 1024;
+  var vis = new pv.Panel()
+    .width(WIDTH)
+    .height(HEIGHT)
+    .margin(4)
+    .fillStyle("white")
+    .event("mousedown", pv.Behavior.pan())
+    .event("mousewheel", pv.Behavior.zoom());
+  
+  var graph = vis.add(pv.Layout.Timey) // pv.Layout.Force
+    .nodes(nodes)
+    .links(links)
+    .time(function(d) { return d.event ? d.event.gseq : 0; })
+    .group(function(d) { return d.event ? d.event.thread_idx : -1; });
+  
+  var colors = pv.Colors.category20();
+  
+  graph.link.add(pv.Line);
+
+  graph.node.add(pv.Dot)
+    .shape("circle")
+    .shapeSize(6)
+    .fillStyle(function(d) { return colors(d.semEvent ? d.semEvent.type : 0); })
+    .strokeStyle(function() { return this.fillStyle().darker(); })
+    .lineWidth(1)
+    .title(function(d) { return d.event ? d.event.gseq : 0; })
+    .event("mousedown", pv.Behavior.drag())
+    .event("click", function(d) { console.log("clicked on", d); });
+    //.event("drag", graph);
+
+  vis.render();  
+}
 
 exports.chewAndShow = function(perfData) {
   console.log("perf data", perfData);
+  
+  var chainer = new mod_chainer.CausalChainer(perfData);
+  chainer.chain();
+  console.log("chainer", chainer);
+  visChainLinks(chainer);
 };
 
 exports.main = function(jsonBlobPath) {
