@@ -39,11 +39,13 @@ require.def("mozperfish/go-causal-ui",
   [
     "exports",
     "mozperfish/causal-chainer",
+    "mozperfish/logproc-testy",
     "mozperfish/pv-layout-timey",
   ],
   function(
     exports,
     mod_chainer,
+    mod_logtesty,
     _timey
   ) {
 
@@ -76,17 +78,47 @@ function visChainLinks(chainer) {
     .width(WIDTH)
     .height(HEIGHT)
     .margin(4)
-    .fillStyle("white")
-    .event("mousedown", pv.Behavior.pan())
-    .event("mousewheel", pv.Behavior.zoom());
+    .fillStyle("white");
+    //.event("mousedown", pv.Behavior.pan());
+    //.event("mousewheel", pv.Behavior.zoom());
   
   var graph = vis.add(pv.Layout.Timey) // pv.Layout.Force
     .nodes(nodes)
     .links(links)
+    .phases(chainer.phases)
     .time(function(d) { return d.event ? d.event.gseq : 0; })
-    .group(function(d) { return d.event ? d.event.thread_idx : -1; });
+    .group(function(d) { return d.event ? d.event.thread_idx : -1; })
+    .kind(function(d) { return d.semEvent ? d.semEvent.type : -1; });
   
   var colors = pv.Colors.category20();
+
+  var initColor = pv.color("hsl(30, 50%, 94%)");
+  var runColor = pv.color("hsl(90, 50%, 94%)");
+  var quitColor = pv.color("hsl(0, 50%, 94%)");
+  var testAColor = pv.color("hsl(240, 50%, 94%)");
+  var testBColor = pv.color("hsl(270, 50%, 94%)");
+  var otherColor = pv.color("hsl(0, 0%, 94%)");
+  graph.phase.add(pv.Bar)
+    .fillStyle(function(p) {
+                 if (p.kind == "init") {
+                   if (p.name == "load")
+                     return initColor;
+                   else
+                     return runColor;
+                 }
+                 else if (p.kind == "test") {
+                   if (this.index % 2)
+                     return testAColor;
+                   else
+                     return testBColor;
+                 }
+                 else if (p.kind == "shutdown") {
+                   return quitColor;
+                 }
+                 else {
+                   return otherColor;
+                 }
+               });
   
   graph.link.add(pv.Line);
 
@@ -97,9 +129,10 @@ function visChainLinks(chainer) {
     .strokeStyle(function() { return this.fillStyle().darker(); })
     .lineWidth(1)
     .title(function(d) { return d.event ? d.event.gseq : 0; })
-    .event("mousedown", pv.Behavior.drag())
+    //.event("mousedown", pv.Behavior.drag())
     .event("click", function(d) { console.log("clicked on", d); });
     //.event("drag", graph);
+
 
   vis.render();  
 }
@@ -107,7 +140,8 @@ function visChainLinks(chainer) {
 exports.chewAndShow = function(perfData) {
   console.log("perf data", perfData);
   
-  var chainer = new mod_chainer.CausalChainer(perfData);
+  var chainer = new mod_chainer.CausalChainer(perfData,
+                                              mod_logtesty.chewXpcshellDumps);
   chainer.chain();
   console.log("chainer", chainer);
   visChainLinks(chainer);

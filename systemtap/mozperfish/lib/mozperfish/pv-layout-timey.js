@@ -52,9 +52,19 @@ require.def("mozperfish/pv-layout-timey", [], function() {
  */
 pv.Layout.Timey = function() {
   pv.Layout.Network.call(this);
+  var that = this;
+  
+  (this.phase = new pv.Mark()
+      .data(function() { return that.phases(); })
+      .left(function (n) { return n.x; })
+      .top(function (n) { return n.y; })
+      .width(function (n) { return n.dx; })
+      .height(function (n) { return n.dy; })
+      ).parent = this;
 };
 
-pv.Layout.Timey.prototype = pv.extend(pv.Layout.Network);
+pv.Layout.Timey.prototype = pv.extend(pv.Layout.Network)
+     .property("phases");
 
 pv.Layout.Timey.prototype.time = function(v) {
   this._time = v;
@@ -63,6 +73,11 @@ pv.Layout.Timey.prototype.time = function(v) {
 
 pv.Layout.Timey.prototype.group = function(v) {
   this._group = v;
+  return this;
+};
+
+pv.Layout.Timey.prototype.kind = function(v) {
+  this._kind = v;
   return this;
 };
 
@@ -75,9 +90,10 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
   if (pv.Layout.Network.prototype.buildImplied.call(this, s))
     return;
   
-  var nodes = s.nodes, links = s.links,
+  var nodes = s.nodes, links = s.links, phases = s.phases,
       timeAccessor = this._time, groupAccessor = this._group,
-      w = s.width, h = s.height;
+      kindAccessor = this._kind,
+      w = s.width, h = s.height, i;
   
   var timeScale = pv.Scale.linear()
                       .domain(nodes, timeAccessor, timeAccessor)
@@ -86,13 +102,30 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
                         .domain(nodes, groupAccessor)
                         .split(0, w);
   
+  var eventDisplace = pv.Scale.ordinal()
+                          .domain(nodes, kindAccessor)
+                          .split(-30, 30);
+  
   console.log("time", timeScale.domain(), timeScale.range());
   console.log("group", groupScale.domain(), groupScale.range());
   
-  for (var i = 0; i < nodes.length; i++) {
+  // nodes
+  for (i = 0; i < nodes.length; i++) {
     var n = nodes[i];
-    n.x = groupScale(groupAccessor(n));
+    n.x = groupScale(groupAccessor(n)) + eventDisplace(kindAccessor(n));
     n.y = timeScale(timeAccessor(n));
+  }
+  
+  // phases
+  for (i = 0; i < phases.length; i++) {
+    var p = phases[i];
+    p.x = 0;
+    p.dx = w;
+    p.y = timeScale(p.start);
+    if (p.end === null)
+      p.dy = h - p.y;
+    else
+      p.dy = timeScale(p.end) - p.y;
   }
 };
 

@@ -65,6 +65,7 @@ require.def("mozperfish/causal-chainer",
   ) {
 
 var EV_TIMER_INSTALLED = 5, EV_TIMER_CLEARED = 6, EV_TIMER_FIRED = 7;
+var EV_LOG_MESSAGE = 11;
 var EV_ELOOP_EXECUTE = 4096, EV_ELOOP_SCHEDULE = 4097;
 var EV_INPUT_READY = 4128, EV_INPUT_PUMP = 4129;
 var EV_XPCJS_CROSS = 4160;
@@ -98,6 +99,12 @@ function ChainLink(event) {
 ChainLink.prototype = {
 };
 
+function Phase() {
+}
+Phase.prototype = {
+};
+exports.Phase = Phase;
+
 /**
  * Instantiate a new causal chainer for the given perfish blob.
  * 
@@ -105,10 +112,13 @@ ChainLink.prototype = {
  *   @param[perfishBlob PerfishBlob]
  * ]
  */
-function CausalChainer(perfishBlob) {
+function CausalChainer(perfishBlob, logProcessor) {
   this.perfishBlob = perfishBlob;
+  this.logProcessor = logProcessor;
   
   this.rootLinks = [];
+  
+  this.phases = [];
 
   /**
    * @dictof[
@@ -302,6 +312,11 @@ CausalChainer.prototype = {
     // -- cancellation
     else if (event.type === EV_TIMER_CLEARED) {
       delete this.pendingTimers[event.data.timerId];
+    }
+    // -- log message
+    else if (event.type === EV_LOG_MESSAGE) {
+      if (this.logProcessor)
+        this.logProcessor(event);
     }
 
     for (var i = 0; i < event.children.length; i++) {

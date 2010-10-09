@@ -116,9 +116,17 @@
 // Add logic to copy /proc/PID/maps to the output directory on entry to main
 //  in case we are doing dynamic execution.
 
+global g_copied_maps;
+
+function copy_maps_if_needed() {
+  if (!g_copied_maps) {
+    g_copied_maps = 1;
+    system(sprintf("cp /proc/%d/maps /tmp/chewtap-%d/maps", pid(), pid()));
+  }
+}
+
 probe process(@@lib:bin/libxul.so).function("NS_LogInit_P") {
-  printf("triggering copy!\n");
-  system(sprintf("cp /proc/%d/maps /tmp/chewtap-%d/maps", pid(), pid()));
+  copy_maps_if_needed();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -141,6 +149,7 @@ global td_seq;
 probe begin {
   dawn_of_time = gettimeofday_ns();
   gseq = 0;
+  g_copied_maps = 0;
 }
 
 function track_enter(eventCode, pre_data) {
@@ -184,7 +193,6 @@ function track_leave(eventCode, data) {
 
     //printf("exit: %d @ %d ... %s\n", eventCode, depth, data);
 
-    // XXX C string fusion over multiple lines stopped working?
     printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":%d,\"time\":%d,\"duration\":%d,\"data\":{%s%s},\"mem\":{",
            ctx, seq, depth, eventCode,
            start - dawn_of_time, duration, pre_data, data);
@@ -362,7 +370,6 @@ function mem_life_cycle_alloc(kind, ptr, size) {
   ctx = tid();
   depth = t_depth[ctx];
 
-  // XXX C string fusion across multiple lines stopped working...
   printf("{\"tid\":%d,\"depth\":%d,\"mtype\":\"alloc\",\"time\":%d,\"data\":{\"source\":%d,\"ptr\":%d,\"size\":%d}}\n",
          ctx, depth,
          now - dawn_of_time, kind, ptr, size);
@@ -373,7 +380,6 @@ function mem_life_cycle_realloc(kind, oldptr, newptr, oldsize, newsize) {
   ctx = tid();
   depth = t_depth[ctx];
 
-  // XXX C string fusion across multiple lines stopped working...
   printf("{\"tid\":%d,\"depth\":%d,\"mtype\":\"realloc\",\"time\":%d,\"data\":{\"source\":%d,\"oldptr\":%d,\"newptr\":%d,\"oldsize\":%d,\"newsize\":%d}}\n",
          ctx, depth,
          now - dawn_of_time, kind, oldptr, newptr, oldsize, newsize);
@@ -384,7 +390,6 @@ function mem_life_cycle_free(kind, ptr, size) {
   ctx = tid();
   depth = t_depth[ctx];
 
-  // XXX C string fusion across multiple lines stopped working...
   printf("{\"tid\":%d,\"depth\":%d,\"mtype\":\"free\",\"time\":%d,\"data\":{\"source\":%d,\"ptr\":%d,\"size\":%d}}\n",
          ctx, depth,
          now - dawn_of_time, kind, ptr, size);
@@ -743,6 +748,47 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
 //  we could co-opt.  dump is co-optable given that its rate of invocation is
 //  low enough that we could perform a simple string formatting rule to
 //  determine what wants actually wants to get logged.
+
+
+// XXX this is xpcshell-only; this really needs to be conditionalized.
+
+//@@file:mozilla/js/src/xpconnect/shell/xpcshell.cpp
+//@@method:Dump
+//@@lineseek:Dump(JSContext *cx, uintN argc, jsval *vp)
+//@@lineseek:fflush(gOutFile);
+probe process(@@exe:).statement(@@statement:ref),
+// XXX all the rest of these don't really need to reget the chars, but we
+//  reuse the code block because we can (and our only escaping logic right
+//  now also happens to be in the 16->8 logic.)
+//@@file:mozilla/js/src/xpconnect/loader/mozJSComponentLoader.cpp
+//@@method:Dump
+//@@lineseek:Dump(JSContext *cx, uintN argc, jsval *vp)
+//@@lineseek:fputs(NS_ConvertUTF16toUTF8(reinterpret_cast<const PRUnichar*>(chars)).get(), stderr);
+ process(@@lib:bin/libxul.so).statement(@@statement:ref),
+//@@file:mozilla/js/src/xpconnect/src/xpccomponents.cpp
+//@@method:SandboxDump
+//@@lineseek:SandboxDump(JSContext *cx, uintN argc, jsval *vp)
+//@@lineseek:if (!chars)
+ process(@@lib:bin/libxul.so).statement(@@statement:ref) {
+  copy_maps_if_needed();
+
+  now = gettimeofday_ns();
+  ctx = tid();
+  depth = t_depth[ctx];
+  seq = gseq++;
+
+  // the bad news is that we have to re-do the work of JS_GetStringBytes
+  //  because its output does not stay in a temporary we can get at.
+  // (arguments start at 2; see JS_ARGV which is all addy)
+  // the good news is that since we are running after the JS_GetStringBytes
+  //  it will already have flattened the string for us so we don't need to deal
+  //  with the horrible horrors of ropes.
+  msg = jsstr_to_string($str);
+
+  printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":11,\"time\":%d,\"data\":{\"message\":\"%s\"}}\n",
+         ctx, seq, depth,
+         now - dawn_of_time, msg);  
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 //// NETWORK_RESOURCE_START : 12
@@ -1107,7 +1153,6 @@ function script_info_from_jsfun(jsfun) {
       jsfun_cache_line[jsfun] = funflags;
     }
   }
-  // XXX C string fusion across multiple lines stopped working...
   return sprintf("\"scriptName\":\"%s\",\"scriptLine\":%d,\"functionName\":\"%s\"",
                  jsfun_cache_filename[jsfun],
                  jsfun_cache_line[jsfun],
@@ -1116,12 +1161,13 @@ function script_info_from_jsfun(jsfun) {
 
 
 /**
- * Copy a u16 string truncating to ASCII.
+ * Copy a u16 string truncating to ASCII and escaping single quote chars
  */
 function user_u16_string:string (addr: long, nchars: long) %{ /* pure */ /* unprivileged */
   // we need space for the u16...
-  int64_t len = clamp_t(int64_t, THIS->nchars*2, 2, MAXSTRINGLEN);
-  // needs to be even
+  // because we escape various characters, we need to lower the max by one
+  //  character to make sure we have space for our nul terminator.
+  int64_t len = clamp_t(int64_t, THIS->nchars*2, 2, MAXSTRINGLEN - 2);
   if (len%2)
     len--;
   assert_is_myproc();
@@ -1135,8 +1181,25 @@ function user_u16_string:string (addr: long, nchars: long) %{ /* pure */ /* unpr
     for (;icp < termp; icp++) {
       if (*icp >= 0x80)
         *ocp++ = 'X';
-      else
-        *ocp++ = (char)*icp;
+      else {
+        char c = (char)*icp;
+        if (c == '"') {
+          *ocp++ = '\\';
+          *ocp++ = '"';
+        }
+        else if (c == '\n') {
+          *ocp++ = '\\';
+          *ocp++ = 'n';
+        }
+        // convert tabs to single spaces. tabs are stupid and escaping them
+        //  legally takes too much space.
+        else if (c == '\t') {
+          *ocp++ = ' ';
+        }
+        else {
+          *ocp++ = c;
+        }
+      }
     }
     *ocp = '\0';
   }
