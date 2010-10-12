@@ -969,7 +969,7 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   track_leave(0x1040, data);
 
   ctx = tid()
-  --t_jscx_depth[ctx];
+  t_jscx_depth[ctx] -= 1;
   // no need to clear out the stale jscx pointer
 }
 
@@ -1011,7 +1011,7 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   track_leave(0x1041, script_info_from_jsscript($script));
 
   ctx = tid()
-  --t_jscx_depth[ctx];
+  t_jscx_depth[ctx] -= 1;
   // no need to clear out the stale jscx pointer
 }
 

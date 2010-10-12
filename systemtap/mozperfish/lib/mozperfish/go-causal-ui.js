@@ -41,12 +41,14 @@ require.def("mozperfish/go-causal-ui",
     "mozperfish/causal-chainer",
     "mozperfish/logproc-testy",
     "mozperfish/pv-layout-timey",
+    "mozperfish/ui-repr",
   ],
   function(
     exports,
     mod_chainer,
     mod_logtesty,
-    _timey
+    _timey,
+    mod_ui_repr
   ) {
 
 function visChainLinks(chainer) {
@@ -95,9 +97,12 @@ function visChainLinks(chainer) {
   
   var normalLinkColor = pv.color("rgba(0,0,0,.2)");
   var selectedLinkColor = pv.color("rgba(255,0,0,.5)");
+  var primaryLinkColor = pv.color("rgba(0,0,255,0.5)");
   graph.link.strokeStyle(function(arr, l) {
                            if (l.targetNode.mark)
                              return selectedLinkColor;
+                           else if (l.targetNode.primary)
+                             return primaryLinkColor;
                            else
                              return normalLinkColor;
                          });
@@ -160,7 +165,7 @@ function visChainLinks(chainer) {
     .text(function(c) { return c.name; })
     // Only show the label if we have enough visible space before our first
     //  child.
-    .visible(function (c) { return c.safe_dy > 3; });
+    .visible(function (c) { return c.safe_dy > 6; });
   
   
   graph.link.add(pv.Line);

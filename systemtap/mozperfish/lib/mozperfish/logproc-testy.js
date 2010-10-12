@@ -64,8 +64,9 @@ var RE_ASYNC_TEST_FINISH = /Finished test: (.+)$/;
 /**
  * Process the output of xpcshell to its Dump function 
  */
-exports.chewXpcshellDumps = function(event) {
+exports.chewXpcshellDumps = function(event, link) {
   var s = event.data.message.trim(), phase, match;
+  var new_link;
   if (s == S_FILES_LOADED) {
     phase = this.initPhase = new Phase();
     phase.start = 0;
@@ -87,19 +88,33 @@ exports.chewXpcshellDumps = function(event) {
     phase.kind = "shutdown";
     phase.name = "quit";
   }
+  // test starting constructs an explicit new causal node
   else if ((match = RE_ASYNC_TEST_START.exec(s))) {
     phase = this.pendingTestPhase = new Phase();
     phase.start = event.gseq;
     phase.end = phase.start; // dummy out for now
     phase.kind = "test";
     phase.name = match[1];
+    
+    new_link = new mod_chainer.ChainLink(event);
+    new_link.synthetic = true;
   }
+  // test termination constructs an explicit new causal node!
   else if ((match = RE_ASYNC_TEST_FINISH.exec(s))) {
     this.pendingTestPhase.end = event.gseq;
     this.pendingTestPhase = null;
+
+    new_link = new mod_chainer.ChainLink(event);
+    new_link.synthetic = true;
   }
   if (phase)
     this.phases.push(phase);
+  if (new_link) {
+    link.outlinks.push(new_link);
+    new_link.inlinks.push(link);
+    new_link.markPrimaryCausalChain();
+  }
+  return new_link;
 };
 
 }); // end require.def

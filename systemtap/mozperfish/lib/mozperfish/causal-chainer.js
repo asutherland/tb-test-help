@@ -97,29 +97,36 @@ var MARK_SELECTED = 1, MARK_ANCESTOR = 2, MARK_DESCENDENT = 3;
 function ChainLink(event) {
   this.event = this.semEvent = event;
   this.mark = null;
+  this.primary = false;
+  this.synthetic = false;
   this.inlinks = [];
   this.outlinks = [];
 }
 ChainLink.prototype = {
-  _markHelper: function(val, attrname) {
+  _markHelper: function(valattr, val, attrname) {
     var list = this[attrname];
     for (var i = 0; i < list.length; i++) {
       var o = list[i];
-      o.mark = val;
-      o._markHelper(val, attrname);
+      o[valattr] = val;
+      o._markHelper(valattr, val, attrname);
     }
   },
   markSelected: function() {
     this.mark = MARK_SELECTED;
-    this._markHelper(MARK_ANCESTOR, "inlinks");
-    this._markHelper(MARK_DESCENDENT, "outlinks");
+    this._markHelper("mark", MARK_ANCESTOR, "inlinks");
+    this._markHelper("mark", MARK_DESCENDENT, "outlinks");
   },
   clearMark: function() {
     this.mark = null;
-    this._markHelper(null, "inlinks");
-    this._markHelper(null, "outlinks");
-  }
+    this._markHelper("mark", null, "inlinks");
+    this._markHelper("mark", null, "outlinks");
+  },
+  markPrimaryCausalChain: function() {
+    this.primary = true;
+    this._markHelper("primary", true, "inlinks");
+  },
 };
+exports.ChainLink = ChainLink;
 
 function Phase() {
 }
@@ -281,16 +288,22 @@ CausalChainer.prototype = {
             continue;
           console.warn("encountered unknown event id!",
                        event.data.eventId, event);
-          this._walk_events(event, link);
-          continue;
         }
         
-        // unwrappable!
+        // - unwrappable!
+        // (The theory is that the event we are unwrapping is not bringing any
+        //  information to the party that is not already contained inside its
+        //  sole child.  Specifically, this holds true for native things like
+        //  timers where all the outer event tells us is the C++ class type
+        //  that we already know by virtue of having a specific probe for that
+        //  type.)
         if (event.children.length === 1) {
+          var origin_event = null;
           switch (event.children[0].type) {
             case EV_TIMER_FIRED:
               // change our concept of the parent link to the origin of the
               //  timer event.
+              origin_event = event;
               event = event.children[0];
               if (event.data.timerId in self.pendingTimers) {
                 parent_link = self.pendingTimers[event.data.timerId];
@@ -304,8 +317,13 @@ CausalChainer.prototype = {
             
             case EV_INPUT_READY:
             case EV_INPUT_PUMP:
+              origin_event = event;
               event = event.children[0];
               break;
+          }
+          // apply any required data propagation
+          if (origin_event) {
+            event.thread_idx = origin_event.thread_idx;
           }
         }
         
@@ -357,10 +375,15 @@ CausalChainer.prototype = {
     else if (event.type === EV_TIMER_CLEARED) {
       delete this.pendingTimers[event.data.timerId];
     }
-    // -- log message
+    // -- log message; can create new synthetic link!!
     else if (event.type === EV_LOG_MESSAGE) {
-      if (this.logProcessor)
-        this.logProcessor(event);
+      if (this.logProcessor) {
+        var nuevo_linko = this.logProcessor(event, link);
+        // if we are given a new link it is what we use for the rest of these
+        //  children
+        if (nuevo_linko)
+          kid_link = link = nuevo_linko;
+      }
     }
     // -- exec context!
     else if (event.type === EV_JSEXEC_CROSS) {
@@ -389,14 +412,16 @@ CausalChainer.prototype = {
 
     var last_gseq = event.gseq;
     for (var i = 0; i < event.children.length; i++) {
-      last_gseq =
+      var recurse_retvals =
         this._walk_events(event.children[i], kid_link, thread_idx, context);
+      last_gseq = recurse_retvals[0];
+      kid_link = recurse_retvals[1];
     }
     
     if (new_context)
       new_context.end = last_gseq;
     
-    return last_gseq;
+    return [last_gseq, kid_link];
   },
 };
 exports.CausalChainer = CausalChainer;
