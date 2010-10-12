@@ -61,10 +61,22 @@ pv.Layout.Timey = function() {
       .width(function (n) { return n.dx; })
       .height(function (n) { return n.dy; })
       ).parent = this;
+  
+  (this.context = new pv.Mark()
+      .data(function() { return that.flattened_contexts; })
+      .left(function (n) { return n.x; })
+      .top(function (n) { return n.y; })
+      .width(function (n) { return n.dx; })
+      .height(function (n) { return n.dy; })
+      ).parent = this;
+      
 };
 
 pv.Layout.Timey.prototype = pv.extend(pv.Layout.Network)
-     .property("phases");
+     .property("phases")
+     .property("contexts")
+     .property("phaseLabelMargin", Number)
+     .property("contextIndent", Number);
 
 pv.Layout.Timey.prototype.time = function(v) {
   this._time = v;
@@ -83,7 +95,9 @@ pv.Layout.Timey.prototype.kind = function(v) {
 
 
 pv.Layout.Timey.prototype.defaults = new pv.Layout.Timey()
-    .extend(pv.Layout.Network.prototype.defaults);
+    .extend(pv.Layout.Network.prototype.defaults)
+    .property("phaseLabelMargin", 80)
+    .property("contextIndent", 60);
 
 pv.Layout.Timey.prototype.buildImplied = function(s) {
   // superclass returns true if we've already built ourselves.
@@ -91,8 +105,10 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
     return;
   
   var nodes = s.nodes, links = s.links, phases = s.phases,
+      contexts = s.contexts, contextIndent = s.contextIndent,
       timeAccessor = this._time, groupAccessor = this._group,
       kindAccessor = this._kind,
+      l_margin = s.phaseLabelMargin,
       w = s.width, h = s.height, i;
   
   var timeScale = pv.Scale.linear()
@@ -100,14 +116,21 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
                       .range(0, h);
   var groupScale = pv.Scale.ordinal()
                         .domain(nodes, groupAccessor)
-                        .split(0, w);
+                        .split(l_margin, w);
+
+  console.log("timeScale", timeScale.domain(), timeScale.range(),
+              "groupScale", groupScale.domain(), groupScale.range());
   
+  var groupRange = groupScale.range();
+  var groupSpan = groupRange[1] - groupRange[0];
+  var groupRightOffset = groupSpan/2, groupLeftOffset = -groupSpan/2;
+
   var eventDisplace = pv.Scale.ordinal()
                           .domain(nodes, kindAccessor)
-                          .split(-30, 30);
+                          .split(groupRightOffset - 60, groupRightOffset);
   
-  console.log("time", timeScale.domain(), timeScale.range());
-  console.log("group", groupScale.domain(), groupScale.range());
+  console.log("groupSpan", groupSpan,
+       "eventDisplace", eventDisplace.domain(), eventDisplace.range());
   
   // nodes
   for (i = 0; i < nodes.length; i++) {
@@ -127,6 +150,41 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
     else
       p.dy = timeScale(p.end) - p.y;
   }
+  
+  // contexts
+  var flattened_contexts = this.flattened_contexts = [];
+  function recurseContext(c, l, r) {
+    c.x = l;
+    c.dx = r - l;
+    c.y = timeScale(c.start);
+    c.dy = c.safe_dy = timeScale(c.end) - c.y;
+    
+    flattened_contexts.push(c);
+    
+    var nl = l + contextIndent;
+    if (nl > r)
+      return;
+    
+    // 'i' is safe in here if var'd, but hey...
+    for (var j = 0; j < c.children.length; j++) {
+      if (!j) {
+        // use the first child to figure out how much vertical space our box
+        //  has before its child box will show up...
+        c.safe_dy = timeScale(c.children[j].start) - c.y;
+      }
+      
+      recurseContext(c.children[j], nl, r);
+    }
+  }
+  for (i = 0; i < contexts.length; i++) {
+    var tlc = contexts[i];
+    var groupBase = groupScale(groupAccessor(tlc));
+    flattened_contexts.push(tlc);
+    recurseContext(tlc,
+                   groupBase + groupLeftOffset,
+                   groupBase + groupRightOffset);
+  }
+  
 };
 
 }); // end require.def

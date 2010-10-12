@@ -68,7 +68,7 @@ var EV_TIMER_INSTALLED = 5, EV_TIMER_CLEARED = 6, EV_TIMER_FIRED = 7;
 var EV_LOG_MESSAGE = 11;
 var EV_ELOOP_EXECUTE = 4096, EV_ELOOP_SCHEDULE = 4097;
 var EV_INPUT_READY = 4128, EV_INPUT_PUMP = 4129;
-var EV_XPCJS_CROSS = 4160;
+var EV_XPCJS_CROSS = 4160, EV_JSEXEC_CROSS = 4161;
 var EV_PROXY_CALL = 4192;
 
 /**
@@ -105,6 +105,13 @@ Phase.prototype = {
 };
 exports.Phase = Phase;
 
+function ExecContext() {
+  this.children = [];
+}
+ExecContext.prototype = {
+};
+exports.ExecContext = ExecContext;
+
 /**
  * Instantiate a new causal chainer for the given perfish blob.
  * 
@@ -118,7 +125,12 @@ function CausalChainer(perfishBlob, logProcessor) {
   
   this.rootLinks = [];
   
+  // Broad, non-nestable phases of operation.  currently assumed to be
+  //  populated by the logProcessor.
   this.phases = [];
+  
+  // Nestable execution contexts associated with specific threads.
+  this.contexts = [];
 
   /**
    * @dictof[
@@ -279,7 +291,8 @@ CausalChainer.prototype = {
         
         // unwrap JS crossings...
         if (event.children.length === 1 &&
-            event.children[0].type === EV_XPCJS_CROSS) {
+            (event.children[0].type === EV_XPCJS_CROSS ||
+             event.children[0].type === EV_JSEXEC_CROSS)) {
           semEvent = link.semEvent = event.children[0];
         }
 
@@ -292,7 +305,12 @@ CausalChainer.prototype = {
    * Walk an event and all of its children in the context of a given causal
    *  link looking for the creation of new events.
    */
-  _walk_events: function CausalChainer__walk_events(event, link) {
+  _walk_events: function CausalChainer__walk_events(event, link, 
+                                                    thread_idx, context) {
+    var new_context;
+    if (thread_idx === undefined)
+      thread_idx = event.thread_idx;
+    
     // -- scheduling
     if (event.type === EV_TIMER_INSTALLED) {
       this.pendingTimers[event.data.timerId] = link;
@@ -318,10 +336,36 @@ CausalChainer.prototype = {
       if (this.logProcessor)
         this.logProcessor(event);
     }
-
-    for (var i = 0; i < event.children.length; i++) {
-      this._walk_events(event.children[i], link);
+    // -- exec context!
+    else if (event.type === EV_JSEXEC_CROSS) {
+      // only bother logging the context if it has children nested under it.
+      if (event.children.length) {
+        new_context = new ExecContext();
+        if (context === undefined) {
+          this.contexts.push(new_context);
+        }
+        else {
+          context.children.push(new_context);
+        }
+        context = new_context;
+        
+        context.start = event.gseq;
+        context.event = event;
+        context.name = event.data.scriptName;
+        context.thread_idx = thread_idx;
+      }
     }
+
+    var last_gseq = event.gseq;
+    for (var i = 0; i < event.children.length; i++) {
+      last_gseq =
+        this._walk_events(event.children[i], link, thread_idx, context);
+    }
+    
+    if (new_context)
+      new_context.end = last_gseq;
+    
+    return last_gseq;
   },
 };
 exports.CausalChainer = CausalChainer;

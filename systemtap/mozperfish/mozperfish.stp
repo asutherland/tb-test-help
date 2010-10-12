@@ -860,9 +860,12 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   depth = t_depth[ctx];
   seq = gseq++;
 
-  printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":4097,\"time\":%d,\"data\":{\"eventId\":%d,\"threadId\":%d}}\n",
+  printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":4097,\"time\":%d,\"data\":{\"eventId\":%d,\"threadId\":%d,\"jsstack\":",
          ctx, seq, depth,
          now - dawn_of_time, $event, $this);
+  // dump a jsstack if we can find one
+  dump_jsstack_under_native();
+  printf("}}\n");
 }
 
 
@@ -940,11 +943,20 @@ probe process(@@lib:bin/libxul.so).function("nsInputStreamPump::OnInputStreamRea
 ////////////////////////////////////////////////////////////////////////////////
 //// XPConnect -> JS Crossing : 0x1040
 
+/** maps [thread] to current thread depth... */
+global t_jscx_depth;
+/** maps [thread, depth] to current JSContext */
+global td_jscx_ptr;
+
 //@@file:mozilla/js/src/xpconnect/src/xpcwrappedjsclass.cpp
 //@@method:nsXPCWrappedJSClass::CallMethod
 //@@lineseek:success = JS_CallFunctionValue(cx, thisObj, fval, argc, argv, &rval);
 probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   track_enter(0x1040, "");
+
+  ctx = tid();
+  depth = t_jscx_depth[ctx]++;
+  td_jscx_ptr[ctx, depth] = $cx;
 }
 
 //@@file:mozilla/js/src/xpconnect/src/xpcwrappedjsclass.cpp
@@ -955,6 +967,52 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   // fval is a jsval... get the pointer out of it
   data = script_info_from_jsfunobj($fval->asBits & 0x00007FFFFFFFFFFF);
   track_leave(0x1040, data);
+
+  ctx = tid()
+  --t_jscx_depth[ctx];
+  // no need to clear out the stale jscx pointer
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
+//// native -> JS Crossing via JS_ExecuteScript : 0x1041
+
+/*
+ * This crossing happens inside:
+ * - xpcshell's ProcessFile routine (the bit we really want to target)
+ * - nsDOMWorkerScriptLoader::ExecuteScripts: Called by LoadScripts which can
+ *    happen as a result of the initial worker setup (SetGlobalForContext) or
+ *    due to a call to 'importScripts' from inside the worker.
+ * - nsJSContext::ExecuteScript in mozilla/dom/base's ExecuteScript, who
+ *    does not seem to have any callers somehow?  macrology must be at play
+ *    or a refactoring orphaned it or something...
+ * - mozJSComponentLoader::GlobalForLocation which is used by LoadModuleImpl and
+ *    ImportInto.
+ * - nsFrameScriptExecutor::LoadFrameScriptInternal which would appear to be
+ *    related to IPC stuff that is mysterious.
+ */
+
+//@@file:mozilla/js/src/jsapi.cpp
+//@@method:JS_ExecuteScript
+//@@lineseek:ok = Execute(cx, obj, script, NULL, 0, Valueify(rval));
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
+  track_enter(0x1041, "");
+
+  ctx = tid();
+  depth = t_jscx_depth[ctx]++;
+  td_jscx_ptr[ctx, depth] = $cx;
+}
+
+//@@file:mozilla/js/src/jsapi.cpp
+//@@method:JS_ExecuteScript
+//@@lineseek:ok = Execute(cx, obj, script, NULL, 0, Valueify(rval));
+//@@lineseek:return ok;
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
+  track_leave(0x1041, script_info_from_jsscript($script));
+
+  ctx = tid()
+  --t_jscx_depth[ctx];
+  // no need to clear out the stale jscx pointer
 }
 
 
@@ -987,6 +1045,91 @@ probe process(@@lib:bin/libxul.so).function("nsProxyObjectCallInfo::Run").return
 //  sufficiently to start with, so do not explicitly handle this for now.  We
 //  may end up caring 
 
+
+////////////////////////////////////////////////////////////////////////////////
+//////// JS Backtrace Support
+
+////////////////////////////////////////////////////////////////////////////////
+//// XPConnect-based
+
+/**
+ * Print the current JS stack assuming we are operating in a native context
+ *  without an explicit JSContext directly available.
+ *
+ * Our trace probes (try to) cover all crossings from native space into JS
+ *  space because they are (hopefully) rare and usually convey interesting
+ *  activity.  We leverage this to push those JSContexts onto a stack so that
+ *  this routine can use them to perform a backtrace.
+ * An alternate XPConnect-specific way we could roll would be to do what
+ *  our VProbes jsstack.emt script did and get XPConnect's thread-local data
+ *  to find its current JSContext and use that.
+ *
+ * When we say print, we literally mean print; we printf our output with the
+ *  assumption we are operating in a JSON value context.  We can't just return
+ *  a string since the size of the backtrace could be greater than the maximum
+ *  allowed string size.
+ * If we don't have a JSContext available, we accordingly just output "null".
+ */
+function dump_jsstack_under_native() {
+  ctx = tid();
+  depth = t_jscx_depth[ctx];
+
+  if (depth) {
+    dump_jsstack(td_jscx_ptr[ctx, depth - 1]);
+  }
+  else {
+    printf("null");
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//// With a JSContext
+
+/**
+ * printf a JSON array representing the current stack state.  Each frame is
+ *  represented as an object 
+ */
+function dump_jsstack(cx) {
+  regs = @cast(cx, "JSContext", @@lib:bin/libxul.so)->regs;
+  if (regs) {
+    fp = @cast(regs, "JSFrameRegs", @@lib:bin/libxul.so)->fp;
+  }
+  if (!regs || !fp) {
+    printf("null");
+  }
+
+  if (regs && fp) {
+  printf("[");
+  first = 1;
+  while(fp) {
+    flags = @cast(fp, "JSStackFrame", @@lib:bin/libxul.so)->flags_;
+    
+    if (!first)
+      printf(",");
+
+    // JSFRAME_FUNCTION
+    if (flags & 0x2) {
+      jsfun = @cast(fp, "JSStackFrame", @@lib:bin/libxul.so)->exec->fun;
+      printf("{%s}",
+             script_info_from_jsfun(jsfun));
+    }
+    // JSFRAME_GLOBAL
+    else if (flags & 0x1) {
+      script = @cast(fp, "JSStackFrame", @@lib:bin/libxul.so)->exec->script;
+      printf("{%s,\"functionName\":\"<global>\"}",
+             script_info_from_jsscript(script));
+    }
+    // DOES NOT FEMPUTE!
+    else {
+      printf("{\"flags\":%d}", flags);
+    }
+
+    fp = @cast(fp, "JSStackFrame", @@lib:bin/libxul.so)->prev_;
+    first = 0;
+  }
+  printf("]");
+  }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 //////// Common JS extraction stuff
@@ -1098,6 +1241,10 @@ function script_info_from_jsfunobj(jsfunobj) {
     @cast(jsfunobj, "JSObject", @@lib:bin/libxul.so)->fslots[0]->data->asPtr);
 }
 
+/**
+ * Given an actual JSFunction, get the script/line/function name and format them
+ *  as a JSON object substring.
+ */
 function script_info_from_jsfun(jsfun) {
   if (jsfun_cache_line[jsfun] == 0) {
     if (!jsfun) {
@@ -1157,6 +1304,16 @@ function script_info_from_jsfun(jsfun) {
                  jsfun_cache_filename[jsfun],
                  jsfun_cache_line[jsfun],
                  jsfun_cache_func_name[jsfun]);
+}
+
+function script_info_from_jsscript(script) {
+  // We expect calls to ourself to be rare and have different values each time,
+  //  so no caching.
+  return sprintf("\"scriptName\":\"%s\",\"scriptLine\":%d",
+                 basename(user_string(@cast(script, "JSScript",
+                                            @@lib:bin/libxul.so)->filename)),
+                 @cast(script, "JSScript",
+                       @@lib:bin/libxul.so)->lineno);
 }
 
 

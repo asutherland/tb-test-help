@@ -86,6 +86,9 @@ function visChainLinks(chainer) {
     .nodes(nodes)
     .links(links)
     .phases(chainer.phases)
+    .contexts(chainer.contexts)
+    .phaseLabelMargin(80)
+    .contextIndent(20)
     .time(function(d) { return d.event ? d.event.gseq : 0; })
     .group(function(d) { return d.event ? d.event.thread_idx : -1; })
     .kind(function(d) { return d.semEvent ? d.semEvent.type : -1; });
@@ -98,7 +101,7 @@ function visChainLinks(chainer) {
   var testAColor = pv.color("hsl(240, 50%, 94%)");
   var testBColor = pv.color("hsl(270, 50%, 94%)");
   var otherColor = pv.color("hsl(0, 0%, 94%)");
-  graph.phase.add(pv.Bar)
+  var phaseBar = graph.phase.add(pv.Bar)
     .fillStyle(function(p) {
                  if (p.kind == "init") {
                    if (p.name == "load")
@@ -119,6 +122,34 @@ function visChainLinks(chainer) {
                    return otherColor;
                  }
                });
+  phaseBar.add(pv.Label)
+    .top(function() { return phaseBar.top(); })
+    .left(function() { return phaseBar.left(); })
+    .textAlign("left")
+    .textBaseline("top")
+    .textStyle("black")
+    .text(function(p) { return p.kind + ": " + p.name; });
+  
+  var zebraContextA = pv.color("rgba(128, 128, 128, 0.2)");
+  var zebraContextB = pv.color("rgba(160, 160, 160, 0.2)");
+  var contextBar = graph.context.add(pv.Bar)
+    .fillStyle(function(c) {
+                 if (this.index % 2)
+                   return zebraContextA;
+                 else
+                   return zebraContextB;
+               });
+  contextBar.add(pv.Label)
+    .top(function() { return contextBar.top(); })
+    .left(function() { return contextBar.left(); })
+    .textAlign("left")
+    .textBaseline("top")
+    .textStyle("black")
+    .text(function(c) { return c.name; })
+    // Only show the label if we have enough visible space before our first
+    //  child.
+    .visible(function (c) { return c.safe_dy > 3; });
+  
   
   graph.link.add(pv.Line);
 
