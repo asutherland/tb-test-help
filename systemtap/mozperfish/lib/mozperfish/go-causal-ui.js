@@ -209,6 +209,8 @@ function visChainLinks(chainer) {
                  }
                })
     .strokeStyle(function(d) { 
+                 if (d.primary)
+                   return primaryLinkColor;
                  switch (d.mark) {
                    case MARK_ANCESTOR:
                    case MARK_SELECTED:
