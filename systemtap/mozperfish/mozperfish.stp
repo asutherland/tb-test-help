@@ -727,7 +727,7 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
 //@@lineseek:mFiring = PR_FALSE;
 probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   track_leave(15, "");
-  track_leave(7, "");
+  track_leave(7, sprintf("\"timerId\":%d", $this));
 }
 
 

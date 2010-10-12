@@ -93,6 +93,15 @@ function visChainLinks(chainer) {
     .group(function(d) { return d.event ? d.event.thread_idx : -1; })
     .kind(function(d) { return d.semEvent ? d.semEvent.type : -1; });
   
+  var normalLinkColor = pv.color("rgba(0,0,0,.2)");
+  var selectedLinkColor = pv.color("rgba(255,0,0,.5)");
+  graph.link.strokeStyle(function(arr, l) {
+                           if (l.targetNode.mark)
+                             return selectedLinkColor;
+                           else
+                             return normalLinkColor;
+                         });
+  
   var colors = pv.Colors.category20();
 
   var initColor = pv.color("hsl(30, 50%, 94%)");
@@ -121,7 +130,10 @@ function visChainLinks(chainer) {
                  else {
                    return otherColor;
                  }
-               });
+               })
+    .event("click", function (p) {
+             selectifyNode(null);
+           });
   phaseBar.add(pv.Label)
     .top(function() { return phaseBar.top(); })
     .left(function() { return phaseBar.left(); })
@@ -153,14 +165,58 @@ function visChainLinks(chainer) {
   
   graph.link.add(pv.Line);
 
+  var curSelected;
+  function selectifyNode(d) {
+    if (curSelected)
+      curSelected.clearMark();
+    if (d)
+      d.markSelected();
+
+    curSelected = d;
+    vis.render();
+  };
+  
+  var MARK_SELECTED = 1, MARK_ANCESTOR = 2, MARK_DESCENDENT = 3;
+  var ancestorColor = pv.color("hsl(0, 100%, 75%)"),
+      selectedColor = pv.color("hsl(0, 100%, 50%)"),
+      descendentColor = pv.color("hsl(0, 100%, 38%)");
   graph.node.add(pv.Dot)
-    .shape("circle")
-    .shapeSize(6)
-    .fillStyle(function(d) { return colors(d.semEvent ? d.semEvent.type : 0); })
-    .strokeStyle(function() { return this.fillStyle().darker(); })
+    .shape(function(d) {
+             if (d.mark)
+               return "square";
+             return "circle";
+           })
+    .shapeSize(function(d) {
+                 if (d.mark)
+                   return 12;
+                 return 6;
+               })
+    .fillStyle(function(d) { 
+                 switch (d.mark) {
+                   case MARK_ANCESTOR:
+                     return ancestorColor;
+                   case MARK_SELECTED:
+                     return selectedColor;
+                   case MARK_DESCENDENT:
+                     return descendentColor;
+                   default:
+                     return colors(d.semEvent ? d.semEvent.type : 0);
+                 }
+               })
+    .strokeStyle(function(d) { 
+                 switch (d.mark) {
+                   case MARK_ANCESTOR:
+                   case MARK_SELECTED:
+                   case MARK_DESCENDENT:
+                     return selectedColor;
+                   default:
+                     return this.fillStyle().darker();
+                 }
+               })
     .lineWidth(1)
     .title(function(d) { return d.event ? d.event.gseq : 0; })
     //.event("mousedown", pv.Behavior.drag())
+    .event("mouseover", selectifyNode)
     .event("click", function(d) { console.log("clicked on", d); });
     //.event("drag", graph);
 

@@ -84,6 +84,8 @@ function ChainPiece() {
 ChainPiece.prototype = {
 };
 
+var MARK_SELECTED = 1, MARK_ANCESTOR = 2, MARK_DESCENDENT = 3;
+
 /**
  * Simple graph atom for the first-pass of causal chain construction.  There is
  *  one cancelable ChainLink for every event top-level event and it has zero or
@@ -94,9 +96,29 @@ ChainPiece.prototype = {
  */
 function ChainLink(event) {
   this.event = this.semEvent = event;
+  this.mark = null;
+  this.inlinks = [];
   this.outlinks = [];
 }
 ChainLink.prototype = {
+  _markHelper: function(val, attrname) {
+    var list = this[attrname];
+    for (var i = 0; i < list.length; i++) {
+      var o = list[i];
+      o.mark = val;
+      o._markHelper(val, attrname);
+    }
+  },
+  markSelected: function() {
+    this.mark = MARK_SELECTED;
+    this._markHelper(MARK_ANCESTOR, "inlinks");
+    this._markHelper(MARK_DESCENDENT, "outlinks");
+  },
+  clearMark: function() {
+    this.mark = null;
+    this._markHelper(null, "inlinks");
+    this._markHelper(null, "outlinks");
+  }
 };
 
 function Phase() {
@@ -234,6 +256,7 @@ CausalChainer.prototype = {
         }
         link = new ChainLink(event);
         thread_link.outlinks.push(link);
+        link.inlinks.push(thread_link);
         this._walk_events(event, link);
       }
       // - event allocation
@@ -268,6 +291,7 @@ CausalChainer.prototype = {
             case EV_TIMER_FIRED:
               // change our concept of the parent link to the origin of the
               //  timer event.
+              event = event.children[0];
               if (event.data.timerId in self.pendingTimers) {
                 parent_link = self.pendingTimers[event.data.timerId];
                 delete self.pendingTimers[event.data.timerId];
@@ -276,7 +300,6 @@ CausalChainer.prototype = {
                 console.warn("encountered unknown timer id!", event);
                 continue;
               }
-              event = event.children[0];
               break;
             
             case EV_INPUT_READY:
@@ -288,6 +311,7 @@ CausalChainer.prototype = {
         
         link = new ChainLink(event);
         parent_link.outlinks.push(link);
+        link.inlinks.push(parent_link);
         
         // unwrap JS crossings...
         if (event.children.length === 1 &&
@@ -307,9 +331,11 @@ CausalChainer.prototype = {
    */
   _walk_events: function CausalChainer__walk_events(event, link, 
                                                     thread_idx, context) {
-    var new_context;
+    var new_context, kid_link = link;
     if (thread_idx === undefined)
       thread_idx = event.thread_idx;
+    else
+      event.thread_idx = thread_idx;
     
     // -- scheduling
     if (event.type === EV_TIMER_INSTALLED) {
@@ -353,13 +379,18 @@ CausalChainer.prototype = {
         context.event = event;
         context.name = event.data.scriptName;
         context.thread_idx = thread_idx;
+        
+        // create a link for this dude at least for raw visualization purposes
+        kid_link = new ChainLink(event);
+        link.outlinks.push(kid_link);
+        kid_link.inlinks.push(link);
       }
     }
 
     var last_gseq = event.gseq;
     for (var i = 0; i < event.children.length; i++) {
       last_gseq =
-        this._walk_events(event.children[i], link, thread_idx, context);
+        this._walk_events(event.children[i], kid_link, thread_idx, context);
     }
     
     if (new_context)
