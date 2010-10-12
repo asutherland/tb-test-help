@@ -72,7 +72,11 @@ class BinaryInfo(object):
                 '--numeric-sort', self.path]
         proc = subprocess.Popen(args, stdout=subprocess.PIPE)
         for line in proc.stdout:
-            addrStr, symtype, symname = line.rstrip().split(None, 2)
+            try:
+                addrStr, symtype, symname = line.rstrip().split(None, 2)
+            except Exception, e:
+                # weird lines should not kill us.
+                continue
             addr = hexparse(addrStr)
 
             # no dupes!
@@ -133,12 +137,17 @@ class ProcInfo(object):
 
         if pid is None:
             self.pid = None
-            return
-        self.pid = int(pid)
+            if mappath is None:
+                return
+        else:
+            self.pid = int(pid)
         self._read_maps(mappath)
 
     def _read_maps(self, mappath=None):
-        '''read /proc/PID/maps to get info about the address space'''
+        '''
+        Read /proc/PID/maps to get info about the address space and store it in
+        self.ranges.
+        '''
         # example:
         #address           perms offset  dev   inode      pathname
         #08040000-08050000 r-xp 00000000 01:02 12345      /usr/bin/ls
@@ -173,6 +182,11 @@ class ProcInfo(object):
         mapfile.close()
 
     def translateAddress(self, addr):
+        '''
+        Map the provided address into a binary's address space using info from
+        self.ranges and then ask the binary (a BinaryInfo instance) to
+        map that normalized address into a useful symbol.
+        '''
         ranges = self.ranges
         if not ranges:
             return None, None
