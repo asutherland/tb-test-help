@@ -108,7 +108,7 @@
 //    adds an "-o" option.
 // "-sNUM" NUM megabyte per-cpu buffers for bulk transfer
 // "-v" is used to increase the debug
-// "--all-modules" is used for the latencytap inclusion.
+// "--all-modules" is used for the latencytap inclusion for its backtracing.
 
 //@@postprocess:perfishpostproc
 

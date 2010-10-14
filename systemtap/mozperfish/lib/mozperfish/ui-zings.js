@@ -35,84 +35,54 @@
  *
  * ***** END LICENSE BLOCK ***** */
 
-require.def("mozperfish/go-causal-ui",
+/**
+ * Zing blamer UI exposure.
+ **/
+
+require.def("mozperfsh/ui-zings",
   [
     "exports",
-    "mozperfish/causal-chainer",
-    "mozperfish/logproc-testy",
-    "mozperfish/pv-layout-timey",
     "wmsy/wmsy",
-    "mozperfish/ui-scaffolding",
-    "mozperfish/ui-repr",
-    "mozperfish/ui-zings",
-    "mozperfish/ui-misc",
-    "mozperfish/ui-vis-chainlinks",
-    "mozperfish/zing-blamer",
   ],
   function(
     exports,
-    mod_chainer,
-    mod_logtesty,
-    _timey,
-    wmsy,
-    _ui_scaffolding,
-    _ui_repr,
-    _ui_zings,
-    _ui_misc,
-    _ui_vis_chainlinks,
-    mod_zing_blamer
+    wmsy
   ) {
 
-var wy = new wmsy.WmsyDomain({id: "go-causal-ui", domain: "mozperfish",
-                              clickToFocus: true});
+var wy = exports.wy =
+  new wmsy.WmsyDomain({id: "ui-zings", domain: "mozperfish",
+                       clickToFocus: true});
 
 wy.defineWidget({
-  name: "top-level",
-  focus: wy.focus.domain.vertical("tabs"),
+  name: "zing-tab",
   constraint: {
-    type: "top-level",
+    type: "tab",
+    obj: {kind: "zings"},
   },
   structure: {
-    vis: wy.widget({type: "vis-chainlinks"}, "chainer"),
-    tabs: wy.widget({type: "tabbox"}, wy.SELF),
-  }
+    overviews: wy.vertList({type: "zing-overview"},
+                           ["zinger", "overviewItems"]),
+  },
 });
 
-exports.chewAndShow = function(perfData) {
-  console.log("perf data", perfData);
-  
-  var chainer = new mod_chainer.CausalChainer(perfData,
-                                              mod_logtesty.chewXpcshellDumps);
-  chainer.chain();
-  console.log("chainer", chainer, "pruned", chainer.pruneCount, "boring events");
-
-  var zing_blamer = new mod_zing_blamer.ZingBlamer(chainer);
-  zing_blamer.summarize();
-  
-  var rootObj = {
-    chainer: chainer,
-    zing_blamer: zing_blamer,
-    tabIndex: 0,
-    tabs: [
-      {kind: "zings", name: "Zings!", zinger: zing_blamer},
-      {kind: "about", name: "About"},
-    ],
-  };
-  
-  var binder = wy.wrapElement(document.getElementById("body"));
-  binder.bind({type: "top-level", obj: rootObj});
-};
-
-exports.main = function(jsonBlobPath) {
-  var req = new XMLHttpRequest();
-  req.open("GET", jsonBlobPath, true);
-  req.addEventListener("load", function() {
-    if (req.status == 200)
-      exports.chewAndShow(JSON.parse(req.responseText));
-    else
-      console.error("failure getting the data");
-  }, false);
-  req.send(null);
-};
+wy.defineWidget({
+  name: "zing-overview",
+  constraint: {
+    type: "zing-overview",
+  },
+  structure: {
+    what: wy.bind("kind"),
+    count: wy.bind("count"),
+    duration: wy.bind("duration"),
+    percentage: wy.bind("percent"),
+  },
+  style: {
+    root: "display: table-row; width: 100%;",
+    what: "display: table-cell; padding: 0px 2em;",
+    count: "display: table-cell; padding: 0px 2em;",
+    duration: "display: table-cell; padding: 0px 2em;",
+    percentage: "display: table-cell; padding: 0px 2em;",
+  }
+});
 
 }); // end require.def

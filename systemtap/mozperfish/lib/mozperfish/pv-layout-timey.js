@@ -69,12 +69,20 @@ pv.Layout.Timey = function() {
       .width(function (n) { return n.dx; })
       .height(function (n) { return n.dy; })
       ).parent = this;
-      
+
+  (this.zing = new pv.Mark()
+      .data(function() { return that.zings(); })
+      .left(function (n) { return n.x; })
+      .top(function (n) { return n.y; })
+      .width(function (n) { return n.dx; })
+      .height(function (n) { return n.dy; })
+      ).parent = this;
 };
 
 pv.Layout.Timey.prototype = pv.extend(pv.Layout.Network)
      .property("phases")
      .property("contexts")
+     .property("zings")
      .property("phaseLabelMargin", Number)
      .property("contextIndent", Number);
 
@@ -85,6 +93,11 @@ pv.Layout.Timey.prototype.eventFromNode = function(v) {
 
 pv.Layout.Timey.prototype.time = function(v) {
   this._time = v;
+  return this;
+};
+
+pv.Layout.Timey.prototype.duration = function(v) {
+  this._duration = v;
   return this;
 };
 
@@ -111,8 +124,10 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
   
   var nodes = s.nodes, links = s.links, phases = s.phases,
       contexts = s.contexts, contextIndent = s.contextIndent,
+      zings = s.zings,
       eventFromNode = this._eventFromNode,
-      timeAccessor = this._time, groupAccessor = this._group,
+      timeAccessor = this._time, durationAccessor = this._duration,
+      groupAccessor = this._group,
       kindAccessor = this._kind,
       l_margin = s.phaseLabelMargin,
       w = s.width, h = s.height, i;
@@ -124,14 +139,17 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
   var timeScale = pv.Scale.linear()
                       .domain(nodes, nodeTimeAccessor, nodeTimeAccessor)
                       .range(0, h);
+  function nodeGroupAccessor(d) {
+    return groupAccessor(eventFromNode(d));
+  }
   var groupScale = pv.Scale.ordinal()
-                        .domain(nodes, groupAccessor)
+                        .domain(nodes, nodeGroupAccessor)
                         .split(l_margin, w);
 
   console.log("timeScale", timeScale.domain(), timeScale.range(),
               "groupScale", groupScale.domain(), groupScale.range());
   
-  var groupRange = groupScale.range();
+  var groupRange = groupScale.range(), groupBase;
   var groupSpan = groupRange[1] - groupRange[0];
   var groupRightOffset = groupSpan/2, groupLeftOffset = -groupSpan/2;
 
@@ -142,11 +160,12 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
   console.log("groupSpan", groupSpan,
        "eventDisplace", eventDisplace.domain(), eventDisplace.range());
   
+  var e;
   // nodes
   for (i = 0; i < nodes.length; i++) {
     var n = nodes[i];
-    var e = eventFromNode(n);
-    n.x = groupScale(groupAccessor(n)) + eventDisplace(kindAccessor(n));
+    e = eventFromNode(n);
+    n.x = groupScale(groupAccessor(e)) + eventDisplace(kindAccessor(n));
     n.y = timeScale(timeAccessor(e));
   }
   
@@ -160,6 +179,20 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
       p.dy = h - p.y;
     else
       p.dy = timeScale(timeAccessor(p.end)) - p.y;
+  }
+  
+  // zings
+  for (i = 0; i < zings.length; i++) {
+    var z = zings[i];
+    e = eventFromNode(z);
+    groupBase = groupScale(groupAccessor(e));
+    z.x = groupBase + groupLeftOffset;
+    z.dx = groupBase + groupRightOffset - z.x;
+    var t = timeAccessor(e);
+    z.y = timeScale(t);
+    z.dy = timeScale(t + durationAccessor(e)) - z.y;
+    if (z.dy < 1)
+      z.dy = 1;
   }
   
   // contexts
@@ -189,7 +222,7 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
   }
   for (i = 0; i < contexts.length; i++) {
     var tlc = contexts[i];
-    var groupBase = groupScale(groupAccessor(tlc));
+    groupBase = groupScale(groupAccessor(tlc));
     flattened_contexts.push(tlc);
     recurseContext(tlc,
                    groupBase + groupLeftOffset,

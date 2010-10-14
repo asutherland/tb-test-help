@@ -66,10 +66,12 @@ require.def("mozperfish/causal-chainer",
 
 var EV_TIMER_INSTALLED = 5, EV_TIMER_CLEARED = 6, EV_TIMER_FIRED = 7;
 var EV_LOG_MESSAGE = 11;
+var EV_GC = 17;
 var EV_ELOOP_EXECUTE = 4096, EV_ELOOP_SCHEDULE = 4097;
 var EV_INPUT_READY = 4128, EV_INPUT_PUMP = 4129;
 var EV_XPCJS_CROSS = 4160, EV_JSEXEC_CROSS = 4161;
 var EV_PROXY_CALL = 4192;
+var EV_LATENCY = 8192;
 
 /**
  * Models a linear run of events in a causal chain without splitting or merging.
@@ -141,6 +143,11 @@ ExecContext.prototype = {
 };
 exports.ExecContext = ExecContext;
 
+function Zing() {
+}
+Zing.prototype = {
+};
+
 /**
  * Instantiate a new causal chainer for the given perfish blob.
  * 
@@ -160,6 +167,15 @@ function CausalChainer(perfishBlob, logProcessor) {
   
   // Nestable execution contexts associated with specific threads.
   this.contexts = [];
+  
+  // Non-nestable specific events with duration associated with specific
+  //  threads.  These are interesting even if they are really short (ex: GC),
+  //  but may be aggregatable if a lot of them happen in a short time period.
+  // The name choice is random because 'mark' already has a specific protovis
+  //  usage and pretty much anything will be hand wavy.  Also, this way, I
+  //  can maybe make a reference to "the ultimate zing", which watchers of
+  //  sealab 2021 will appreciate.
+  this.zings = [];
   
   // Count the number of events that get pruned out of the graph but that
   //  might merit investigation if this number gets really high.
@@ -368,7 +384,7 @@ CausalChainer.prototype = {
    */
   _walk_events: function CausalChainer__walk_events(event, link, 
                                                     thread_idx, context) {
-    var new_context, kid_link = link;
+    var new_context, kid_link = link, zing;
     if (thread_idx === undefined)
       thread_idx = event.thread_idx;
     else
@@ -425,6 +441,20 @@ CausalChainer.prototype = {
         link.outlinks.push(kid_link);
         kid_link.inlinks.push(link);
       }
+    }
+    // -- GC
+    else if (event.type === EV_GC) {
+      zing = new Zing();
+      zing.kind = "gc";
+      zing.event = event;
+      this.zings.push(zing);
+    }
+    // -- latency!
+    else if (event.type === EV_LATENCY) {
+      zing = new Zing();
+      zing.kind = "latency";
+      zing.event = event;
+      this.zings.push(zing);
     }
 
     var last_event = event;
