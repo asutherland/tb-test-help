@@ -171,6 +171,9 @@ class ThreadProc(object):
                 data['callerScriptName'].startswith(':!')):
             data['callerScriptName'] = \
                 self.context.procinfo.transformString(data['callerScriptName'])
+        if ('stack' in data):
+            data['stack'] =  self.context.procinfo.transformStackString(
+                                 data['stack'])
 
         # - add fields...
         obj['children'] = ()

@@ -91,7 +91,9 @@ function visChainLinks(chainer) {
     .contexts(chainer.contexts)
     .phaseLabelMargin(80)
     .contextIndent(20)
-    .time(function(d) { return d.event ? d.event.gseq : 0; })
+    .eventFromNode(function(n) { return n ? n.event : n; })
+    //.time(function(d) { return d ? d.gseq : d; })
+    .time(function(d) { return d ? d.time : d; })
     .group(function(d) { return d.event ? d.event.thread_idx : -1; })
     .kind(function(d) { return d.semEvent ? d.semEvent.type : -1; });
   
@@ -237,7 +239,7 @@ exports.chewAndShow = function(perfData) {
   var chainer = new mod_chainer.CausalChainer(perfData,
                                               mod_logtesty.chewXpcshellDumps);
   chainer.chain();
-  console.log("chainer", chainer);
+  console.log("chainer", chainer, "pruned", chainer.pruneCount, "boring events");
   visChainLinks(chainer);
 };
 

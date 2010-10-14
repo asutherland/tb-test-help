@@ -160,6 +160,10 @@ function CausalChainer(perfishBlob, logProcessor) {
   
   // Nestable execution contexts associated with specific threads.
   this.contexts = [];
+  
+  // Count the number of events that get pruned out of the graph but that
+  //  might merit investigation if this number gets really high.
+  this.pruneCount = 0;
 
   /**
    * @dictof[
@@ -267,7 +271,7 @@ CausalChainer.prototype = {
         this._walk_events(event, link);
       }
       // - event allocation
-      // (we know this msut be an event loop execution, but we can potentially
+      // (we know this must be an event loop execution, but we can potentially
       //  unwrap it based on how it got tunneled over; for example timer
       //  invocation or asynchronous callback, etc.)
       else {
@@ -288,6 +292,18 @@ CausalChainer.prototype = {
             continue;
           console.warn("encountered unknown event id!",
                        event.data.eventId, event);
+        }
+        
+        // - killable!
+        // Some events should just be pruned...
+        // nsTimerEvents that do not fire, for example
+        if (event.data.scriptName === "nsTimerEvent" &&
+            event.children.length === 0) {
+          // This can happen because of a generation mismatch or cancellation.
+          // They effectively did not happen, and clutter up the causality
+          //  graph.
+          this.pruneCount++;
+          continue;
         }
         
         // - unwrappable!
@@ -399,7 +415,7 @@ CausalChainer.prototype = {
         }
         context = new_context;
         
-        context.start = event.gseq;
+        context.start = event;
         context.event = event;
         context.name = event.data.scriptName;
         context.thread_idx = thread_idx;
@@ -411,18 +427,18 @@ CausalChainer.prototype = {
       }
     }
 
-    var last_gseq = event.gseq;
+    var last_event = event;
     for (var i = 0; i < event.children.length; i++) {
       var recurse_retvals =
         this._walk_events(event.children[i], kid_link, thread_idx, context);
-      last_gseq = recurse_retvals[0];
+      last_event = recurse_retvals[0];
       kid_link = recurse_retvals[1];
     }
     
     if (new_context)
-      new_context.end = last_gseq;
+      new_context.end = last_event;
     
-    return [last_gseq, kid_link];
+    return [last_event, kid_link];
   },
 };
 exports.CausalChainer = CausalChainer;

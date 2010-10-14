@@ -78,6 +78,11 @@ pv.Layout.Timey.prototype = pv.extend(pv.Layout.Network)
      .property("phaseLabelMargin", Number)
      .property("contextIndent", Number);
 
+pv.Layout.Timey.prototype.eventFromNode = function(v) {
+  this._eventFromNode = v;
+  return this;
+};
+
 pv.Layout.Timey.prototype.time = function(v) {
   this._time = v;
   return this;
@@ -106,13 +111,18 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
   
   var nodes = s.nodes, links = s.links, phases = s.phases,
       contexts = s.contexts, contextIndent = s.contextIndent,
+      eventFromNode = this._eventFromNode,
       timeAccessor = this._time, groupAccessor = this._group,
       kindAccessor = this._kind,
       l_margin = s.phaseLabelMargin,
       w = s.width, h = s.height, i;
   
+  function nodeTimeAccessor(d) {
+    return timeAccessor(eventFromNode(d));
+  }
+  
   var timeScale = pv.Scale.linear()
-                      .domain(nodes, timeAccessor, timeAccessor)
+                      .domain(nodes, nodeTimeAccessor, nodeTimeAccessor)
                       .range(0, h);
   var groupScale = pv.Scale.ordinal()
                         .domain(nodes, groupAccessor)
@@ -135,8 +145,9 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
   // nodes
   for (i = 0; i < nodes.length; i++) {
     var n = nodes[i];
+    var e = eventFromNode(n);
     n.x = groupScale(groupAccessor(n)) + eventDisplace(kindAccessor(n));
-    n.y = timeScale(timeAccessor(n));
+    n.y = timeScale(timeAccessor(e));
   }
   
   // phases
@@ -144,11 +155,11 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
     var p = phases[i];
     p.x = 0;
     p.dx = w;
-    p.y = timeScale(p.start);
+    p.y = timeScale(timeAccessor(p.start));
     if (p.end === null)
       p.dy = h - p.y;
     else
-      p.dy = timeScale(p.end) - p.y;
+      p.dy = timeScale(timeAccessor(p.end)) - p.y;
   }
   
   // contexts
@@ -156,8 +167,8 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
   function recurseContext(c, l, r) {
     c.x = l;
     c.dx = r - l;
-    c.y = timeScale(c.start);
-    c.dy = c.safe_dy = timeScale(c.end) - c.y;
+    c.y = timeScale(timeAccessor(c.start));
+    c.dy = c.safe_dy = timeScale(timeAccessor(c.end)) - c.y;
     
     flattened_contexts.push(c);
     
@@ -170,7 +181,7 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
       if (!j) {
         // use the first child to figure out how much vertical space our box
         //  has before its child box will show up...
-        c.safe_dy = timeScale(c.children[j].start) - c.y;
+        c.safe_dy = timeScale(timeAccessor(c.children[j].start)) - c.y;
       }
       
       recurseContext(c.children[j], nl, r);

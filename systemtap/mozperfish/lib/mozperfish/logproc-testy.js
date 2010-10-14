@@ -70,20 +70,20 @@ exports.chewXpcshellDumps = function(event, link) {
   if (s == S_FILES_LOADED) {
     phase = this.initPhase = new Phase();
     phase.start = 0;
-    phase.end = event.gseq;
+    phase.end = event;
     phase.kind = "init";
     phase.name = "load";
   }
   else if (s == S_EVENT_LOOP_STARTING) {
     phase = new Phase();
     phase.start = this.initPhase.end;
-    phase.end = event.gseq;
+    phase.end = event;
     phase.kind = "init";
     phase.name = "run";
   }
   else if (s == S_QUITTING) {
     phase = new Phase();
-    phase.start = event.gseq;
+    phase.start = event;
     phase.end = null;
     phase.kind = "shutdown";
     phase.name = "quit";
@@ -91,7 +91,7 @@ exports.chewXpcshellDumps = function(event, link) {
   // test starting constructs an explicit new causal node
   else if ((match = RE_ASYNC_TEST_START.exec(s))) {
     phase = this.pendingTestPhase = new Phase();
-    phase.start = event.gseq;
+    phase.start = event;
     phase.end = phase.start; // dummy out for now
     phase.kind = "test";
     phase.name = match[1];
@@ -101,7 +101,7 @@ exports.chewXpcshellDumps = function(event, link) {
   }
   // test termination constructs an explicit new causal node!
   else if ((match = RE_ASYNC_TEST_FINISH.exec(s))) {
-    this.pendingTestPhase.end = event.gseq;
+    this.pendingTestPhase.end = event;
     this.pendingTestPhase = null;
 
     new_link = new mod_chainer.ChainLink(event);

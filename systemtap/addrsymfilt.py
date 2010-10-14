@@ -236,6 +236,15 @@ class ProcInfo(object):
             return self.normalizeHexAddress(hexaddr, command, padding)
         return s
 
+    def transformStackString(self, s):
+        '''
+        Given a string with space-delimited pointers, return a list of
+        symbol names.
+        '''
+        frames = []
+        for addr in s.split(' '):
+            frames.append(self.normalizeHexAddress(addr, 'vt'))
+        return frames
 
 def main(pid):
     normal_hex_re = re.compile("0x[0-9a-f]+")
