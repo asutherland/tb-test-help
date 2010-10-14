@@ -107,6 +107,7 @@
 //    userspace crossings (I think... we'll see! :).  Our driver automatically
 //    adds an "-o" option.
 // "-sNUM" NUM megabyte per-cpu buffers for bulk transfer
+// "-v" is used to increase the debug
 
 //@@postprocess:perfishpostproc
 
@@ -622,9 +623,10 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   depth = t_depth[ctx];
   seq = gseq++;
 
-  printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":5,\"time\":%d,\"data\":{\"timerId\":%d,\"singleShot\":true,\"timeout\":%d}}\n",
+  singleShot = ($aType == 0);
+  printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":5,\"time\":%d,\"data\":{\"timerId\":%d,\"singleShot\":%d,\"timeout\":%d}}\n",
          ctx, seq, depth,
-         now - dawn_of_time, $this, $aDelay);
+         now - dawn_of_time, $this, singleShot, $aDelay);
 }
 
 
@@ -641,7 +643,7 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   depth = t_depth[ctx];
   seq = gseq++;
 
-  printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":5,\"time\":%d,\"data\":{\"timerId\":%d}}\n",
+  printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":6,\"time\":%d,\"data\":{\"timerId\":%d}}\n",
          ctx, seq, depth,
          now - dawn_of_time, $this);
 }

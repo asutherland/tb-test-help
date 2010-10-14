@@ -306,8 +306,11 @@ CausalChainer.prototype = {
               origin_event = event;
               event = event.children[0];
               if (event.data.timerId in self.pendingTimers) {
-                parent_link = self.pendingTimers[event.data.timerId];
-                delete self.pendingTimers[event.data.timerId];
+                var timer_info = self.pendingTimers[event.data.timerId];
+                parent_link = timer_info[1];
+                // clear only if single shot
+                if (timer_info[0])
+                  delete self.pendingTimers[event.data.timerId];
               }
               else {
                 console.warn("encountered unknown timer id!", event);
@@ -357,14 +360,12 @@ CausalChainer.prototype = {
     
     // -- scheduling
     if (event.type === EV_TIMER_INSTALLED) {
-      this.pendingTimers[event.data.timerId] = link;
+      // A given timer can only have one active thing at a time so the
+      //  representation is much simpler than for the runnable scheduling
+      //  in the next case.
+      this.pendingTimers[event.data.timerId] = [event.data.singleShot, link];
     }
     else if (event.type === EV_ELOOP_SCHEDULE) {
-      /*
-      console.log("event scheduled", event.data.eventId,
-                  "on", event.data.threadId,
-                  "by", event);
-       */
       if (!(event.data.threadId in this.pendingEvents))
         this.pendingEvents[event.data.threadId] = {};
       if (!(event.data.eventId in this.pendingEvents[event.data.threadId]))

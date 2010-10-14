@@ -203,12 +203,16 @@ class ThreadProc(object):
                 cur_stack.append(obj)
         else: # obj_depth > cur_depth
             self.stack.append((obj_depth, [obj]))
-            
 
-    def allDone(self):
-        self.f.write(self.context.templ_bits[1])
-        self.f.close()
-        self.f = None
+    def finalizeThread(self):
+        '''
+        Called when we are done being fed events and might want to close stuff
+        out.
+        '''
+        if len(self.stack):
+            if not (len(self.stack) == 1 and len(self.stack[0][1]) == 0):
+                print 'Thread', self.tid, 'still has stack contents!:'
+                print repr(self.stack)
 
 
 class Processor(object):
@@ -229,7 +233,7 @@ class Processor(object):
                 if line[0] != '{':
                     print 'Ignoring line:', line.rstrip()
                     continue
-                # transform trailing stuff...
+                # transform trailing stuff... (json does not like!)
                 line = line.replace(',}', '}')
                 try:
                     obj = json.loads(line)
@@ -244,7 +248,8 @@ class Processor(object):
                     tproc = thread_procs[tid] = ThreadProc(context, tid)
 
                 tproc.chew(obj)
-                    
+        for thread in thread_procs.values():
+            thread.finalizeThread()
 
         lastEventEndsAtTime = obj['time']
         if 'duration' in obj:

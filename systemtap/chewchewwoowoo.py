@@ -370,7 +370,7 @@ class BulkProcessor(object):
         min_seq = self.next_seqs_by_file[0]
         for i in range(1, len(self.next_seqs_by_file)):
             seq = self.next_seqs_by_file[i]
-            if (min_seq is None) or seq < min_seq:
+            if (seq is not None) and ((min_seq is None) or seq < min_seq):
                 min_idx = i
                 min_seq = seq
         if min_seq is None:
