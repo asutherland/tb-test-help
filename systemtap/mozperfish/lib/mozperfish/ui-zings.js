@@ -55,6 +55,7 @@ var wy = exports.wy =
 
 wy.defineWidget({
   name: "zing-tab",
+  focus: wy.focus.container.vertical("overviews"),
   constraint: {
     type: "tab",
     obj: {kind: "zings"},
@@ -67,22 +68,72 @@ wy.defineWidget({
 
 wy.defineWidget({
   name: "zing-overview",
+  focus: wy.focus.nestedItem.vertical("kids"),
   constraint: {
     type: "zing-overview",
   },
   structure: {
-    what: wy.bind("kind"),
-    count: wy.bind("count"),
-    duration: wy.bind("duration"),
-    percentage: wy.bind("percent"),
+    row: {
+      what: wy.bind("kind"),
+      count: wy.bind("count"),
+      duration: wy.bind("duration"),
+      percentage: wy.bind("percent"),
+    },
+    kids: wy.vertList({type: "zing-latency"}, "sub"),
   },
   style: {
-    root: "display: table-row; width: 100%;",
-    what: "display: table-cell; padding: 0px 2em;",
-    count: "display: table-cell; padding: 0px 2em;",
-    duration: "display: table-cell; padding: 0px 2em;",
+    root: {
+      ":focused": {
+        "row": [
+          "background-color: #eeeeff;",
+        ],
+      }
+    },
+    row: {
+      _: [
+        "display: table-row; width: 100%;",
+      ],
+      ":hover": [
+        "background-color: #eeeeee;",
+      ],
+    },
+    what: "display: table-cell; width: 16em; padding: 0px 2em;",
+    count: "display: table-cell; width: 4em; padding: 0px 2em;",
+    duration: "display: table-cell; width: 10em; padding: 0px 2em;",
     percentage: "display: table-cell; padding: 0px 2em;",
   }
 });
+
+wy.defineWidget({
+  name: "zing-latency",
+  focus: wy.focus.item,
+  constraint: {
+    type: "zing-latency",
+  },
+  structure: {
+    row: {
+      reason: wy.bind("reason"),
+      count: wy.bind("count"),
+      duration: wy.bind("duration"),
+      percentage: wy.bind("percent"),
+    },
+  },
+  style: {
+    root: {
+      _: "display: table-row; width: 100%;",
+      ":hover": [
+        "background-color: #eeeeee;",
+      ],
+      ":focused": [
+        "background-color: #eeeeff;",
+      ],
+    },
+    reason: "display: table-cell; width: 15em; padding: 0px 2em; padding-left: 3em;",
+    count: "display: table-cell; width: 4em; padding: 0px 2em;",
+    duration: "display: table-cell; width: 10em; padding: 0px 2em;",
+    percentage: "display: table-cell; padding: 0px 2em;",
+  }
+});
+
 
 }); // end require.def

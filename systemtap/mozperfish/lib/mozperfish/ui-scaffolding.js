@@ -56,7 +56,7 @@ var wy = exports.wy =
 
 wy.defineWidget({
   name: "tabbox",
-  focus: wy.focus.container.vertical("headers"),
+  focus: wy.focus.container.vertical("headers", "panels"),
   constraint: {
     type: "tabbox",
   },
