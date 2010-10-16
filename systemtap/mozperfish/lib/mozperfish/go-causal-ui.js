@@ -72,6 +72,7 @@ wy.defineWidget({
   constraint: {
     type: "top-level",
   },
+  provideContext: {zing_blamer: "zing_blamer"},
   structure: {
     vis: wy.widget({type: "vis-chainlinks"}, "chainer"),
     tabs: wy.widget({type: "tabbox"}, wy.SELF),

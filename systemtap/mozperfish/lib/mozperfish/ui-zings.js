@@ -75,11 +75,26 @@ wy.defineWidget({
   structure: {
     row: {
       what: wy.bind("kind"),
-      count: wy.bind("count"),
-      duration: wy.bind("duration"),
-      percentage: wy.bind("percent"),
+      count: [wy.bind("count", {goodness: wy.computed("howgood")}),
+              " times"],
+      duration: [wy.bind("duration", "#.##"), " secs"],
+      percentage: [wy.computed("percentage", "#.##"), "% of runtime"],
     },
     kids: wy.vertList({type: "zing-latency"}, "sub"),
+  },
+  impl: {
+    percentage: function() {
+      return this.obj.duration * 100 /
+               this.__context.zing_blamer.endOfTime;
+    },
+    howgood: function() {
+      var count = this.obj.count;
+      if (count > 1000)
+        return "bad";
+      if (count > 100)
+        return "warn";
+      return "good";
+    },
   },
   style: {
     root: {
@@ -98,7 +113,12 @@ wy.defineWidget({
       ],
     },
     what: "display: table-cell; width: 16em; padding: 0px 2em;",
-    count: "display: table-cell; width: 4em; padding: 0px 2em;",
+    count: "display: table-cell; width: 6em; padding: 0px 2em;",
+    count0: {
+      '[goodness="good"]': "color: green;",
+      '[goodness="warn"]': "color: yellow;",
+      '[goodness="bad"]': "color: red;",
+    },
     duration: "display: table-cell; width: 10em; padding: 0px 2em;",
     percentage: "display: table-cell; padding: 0px 2em;",
   }
