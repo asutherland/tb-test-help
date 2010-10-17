@@ -86,7 +86,7 @@ wy.defineWidget({
   structure: {
     row: {
       what: wy.bind("kind"),
-      count: [wy.bind("count", {goodness: wy.computed("countgood")}),
+      count: [wy.bind("count", "#", {goodness: wy.computed("countgood")}),
               " times"],
       duration: [wy.bind("duration", "#.##",
                          {goodness: wy.computed("durationgood")}),
@@ -166,7 +166,7 @@ wy.defineWidget({
   emit: ["openTab"],
   structure: {
     reason: wy.bind("reason"),
-    count: [wy.bind("count", {goodness: wy.computed("countgood")}),
+    count: [wy.bind("count", "#", {goodness: wy.computed("countgood")}),
             " times"],
     duration: [wy.bind("duration", "#.##",
                        {goodness: wy.computed("durationgood")}),
@@ -199,10 +199,10 @@ wy.defineWidget({
     root: {
       command: function() {
         this.emit_openTab({
-          name: this.reason,
+          name: this.obj.reason,
           kind: "stack-breakout",
-          
-        });
+          stackalyzer: this.obj.stackalyzer,
+        }, true, true);
       }
     },
   },
@@ -243,9 +243,76 @@ wy.defineWidget({
     type: "tab",
     obj: {kind: "stack-breakout"},
   },
+  focus: wy.focus.container.vertical("stackalyzer"),
   structure: {
+    label: "Callers:",
+    stackalyzer: wy.widget({type: "stackalyzer"}, "stackalyzer"),
   },
-  
+  style: {
+    root: [
+      "margin: 4px;",
+    ],
+  },
 });
+
+wy.defineWidget({
+  name: "stackalyzer",
+  constraint: {
+    type: "stackalyzer",
+  },
+  focus: wy.focus.container.vertical("commonStacks"),
+  structure: {
+    commonStacks: wy.vertList({type: "common-stack"}, "displayList")
+  },
+  impl: {
+    preInit: function() {
+      this.obj.normalizeForDisplay();
+    },
+  },
+  style: {
+    "commonStacks-item": {
+      _: [
+        "border: 1px solid gray;",
+        "border-radius: 3px;",
+        "padding: 4px;",
+        "margin-bottom: 2px;",
+      ],
+      ":focused": [
+        //"border: 1px solid blue;",
+        "outline: 1px dotted blue;",
+        "background-color: #eeeeff;",
+      ]
+    }
+  },
+});
+
+wy.defineWidget({
+  name: "common-stack",
+  doc: "stack display with cost/count info associated with stack",
+  constraint: {
+    type: "common-stack",
+  },
+  focus: wy.focus.item,
+  structure: {
+    stack: wy.vertList({type: "JSStackFrame"}, "stack"),
+    cost: {
+      duration: [wy.bind("cost", "#.##"), " ms"],
+      count: [wy.bind("count", "#"), " times"],
+    }
+  },
+  style: {
+    root: [
+    ],
+    stack: [
+      "display: inline-block;",
+    ],
+    cost: [
+      "float: right;",
+    ],
+    duration: [
+    ],
+  },
+});
+
 
 }); // end require.def

@@ -61,21 +61,31 @@ wy.defineWidget({
   },
   structure: {
     scriptName: wy.bind("scriptName"),
-    scriptLine: wy.bind("scriptLine"),
+    scriptLine: ["line ", wy.bind("scriptLine")],
     functionName: wy.bind("functionName"),
   },
   style: {
-    root: [
-      "display: table-row;",
-    ],
+    // Taking colors from syntax-js-proton.css from narscribblus/jstut which is
+    //  based on the proton vim theme:
+    //  http://vimcolorschemetest.googlecode.com/svn/colors/proton.vim
     scriptName: [
-      "display: table-cell;",
+      "display: inline-block;",
+      "width: 20em;",
+      "padding: 0 0.5em;",
+      "color: #607080;",
     ],
     scriptLine: [
-      "display: table-cell;",
+      "display: inline-block;",
+      "width: 4em;",
+      "padding: 0 0.5em;",
+      "text-align: right;",
+      "color: #508040;",
     ],
     functionName: [
-      "display: table-cell;",
+      "display: inline-block;",
+      "width: 20em;",
+      "padding: 0 0.5em;",
+      "color: #b08020;",
     ],
   },
 });

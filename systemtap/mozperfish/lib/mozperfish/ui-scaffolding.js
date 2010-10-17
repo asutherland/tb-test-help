@@ -71,7 +71,34 @@ wy.defineWidget({
       this._switchTab(this.obj.tabs.indexOf(obj));
     },
     openTab: function(obj, showImmediately, relTabObj) {
-      
+      // Here's the sitch: view slices are inherently single-consumer
+      //  entitities, but we have two (headers_slice, panels_slice) fronting a
+      //  single Array (obj.tabs).  We could just mutate tabs and call update,
+      //  but our rebuild logic has no optimized paths; it nukes everything and
+      //  then rebuilds.
+      // So we just tell both headers and panels about the change.
+
+      // - figure out where to insert the tab
+      var index;
+      if (relTabObj === true)
+        index = this._selectedIndex + 1;
+      else if (relTabObj)
+        index = this.obj.tabs.indexOf(relTabObj) + 1;
+      else
+        index = this.obj.tabs.length;
+
+      // - perform the splice on the array
+      var objs = [obj];
+      this.obj.tabs.splice(index, 0, obj);
+      // - tell the view slices what we have wrought
+      this.headers_slice.splice(index, 0, objs);
+      this.panels_slice.splice(index, 0, objs);
+
+      if (this._selectedIndex === index)
+        this._selectedIndex++;
+
+      if (showImmediately)
+        this._switchTab(index);
     },
   },
   impl: {
@@ -97,12 +124,15 @@ wy.defineWidget({
         panelNode.removeAttribute("selected");
         panelNode.binding.__focusEnable(false);
       }
-      this.headers_element.children[index]
-        .setAttribute("selected", "true");
+      var headerNode = this.headers_element.children[index];
+      headerNode.setAttribute("selected", "true");
+      // for automatically selected tabs this is needed, idempotent for others
+      headerNode.binding.focus();
+
       panelNode = this.panels_element.children[index];
       panelNode.setAttribute("selected", "true");
       panelNode.binding.__focusEnable(true);
-      
+
       this._selectedIndex = index;
     },
   },
