@@ -127,7 +127,7 @@ wy.defineWidget({
       }
     },
     kids: [
-      "margin-left: 2em;",
+      "margin-left: 1em;",
       "border-top: 1px solid #eeeeee;",
       "border-bottom: 1px solid #eeeeee;",
     ],
@@ -139,19 +139,19 @@ wy.defineWidget({
         "background-color: #eeeeee;",
       ],
     },
-    what: "display: inline-block; width: 16em; padding: 0px 1em;",
+    what: "display: inline-block; width: 15em; padding: 0px 0.5em;",
     count: [
-      "display: inline-block; width: 6em; padding: 0px 1em;",
+      "display: inline-block; width: 6em; padding: 0px 0.5em;",
       "text-align: right;",
     ],
     count0: cssGoodness,
     duration: [
-      "display: inline-block; width: 8em; padding: 0px 1em;",
+      "display: inline-block; width: 7em; padding: 0px 0.5em;",
       "text-align: right;",
     ],
     duration0: cssGoodness,
     percentage: [
-      "display: inline-block; width: 8em; padding: 0px 1em;",
+      "display: inline-block; width: 8em; padding: 0px 0.5em;",
       "text-align: right;"
     ],
   }
@@ -219,19 +219,19 @@ wy.defineWidget({
         "outline: 1px blue dotted;",
       ],
     },
-    reason: "display: inline-block; width: 14em; padding: 0px 1em;",
+    reason: "display: inline-block; width: 14em; padding: 0px 0.5em;",
     count: [
-      "display: inline-block; width: 6em; padding: 0px 1em;",
+      "display: inline-block; width: 6em; padding: 0px 0.5em;",
       "text-align: right;",
     ],
     count0: cssGoodness,
     duration: [
-      "display: inline-block; width: 8em; padding: 0px 1em;",
+      "display: inline-block; width: 7em; padding: 0px 0.5em;",
       "text-align: right;",
     ],
     duration0: cssGoodness,
     percentage: [
-      "display: inline-block; width: 8em; padding: 0px 1em;",
+      "display: inline-block; width: 8em; padding: 0px 0.5em;",
       "text-align: right;"
     ],
   }
@@ -308,6 +308,7 @@ wy.defineWidget({
     ],
     cost: [
       "float: right;",
+      "text-align: right;",
     ],
     duration: [
     ],

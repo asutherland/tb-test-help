@@ -100,6 +100,9 @@ wy.defineWidget({
       if (showImmediately)
         this._switchTab(index);
     },
+    closeTab: function(obj) {
+      this._closeTab(this.obj.tabs.indexOf(obj));
+    },
   },
   impl: {
     // we want to happen after the initial update pass so the child tabs exist.
@@ -135,6 +138,23 @@ wy.defineWidget({
 
       this._selectedIndex = index;
     },
+    _closeTab: function(index) {
+      this.obj.tabs.splice(index, 1);
+      // - tell the view slices what we have wrought
+      this.headers_slice.splice(index, 1);
+      this.panels_slice.splice(index, 1);
+
+      // If we deleted the selected tab, switch to...
+      if (index === this._selectedIndex) {
+        this._selectedIndex = null;
+        // the one to the left of it
+        if (index > 0)
+          this._switchTab(index - 1);
+        // the one replacing it
+        else if (index < this.obj.tabs.length)
+          this._switchTab(index);
+      }
+    },
   },
   style: {
     headers: [
@@ -161,16 +181,22 @@ wy.defineWidget({
     type: "tab-header",
     obj: {kind: wy.WILD},
   },
-  emit: ["switchTab"],
+  emit: ["switchTab", "closeTab"],
   events: {
     root: {
       command: function() {
         this.emit_switchTab(this.obj);
       },
+    },
+    close: {
+      click: function() {
+        this.emit_closeTab(this.obj);
+      }
     }
   },
   structure: {
     label: wy.bind("name"),
+    close: "X",
   },
   style: {
     root: {
@@ -189,6 +215,17 @@ wy.defineWidget({
       ':focused': [
         "background-color: #eeeeff;",
         "outline: 1px blue dotted;",
+      ],
+    },
+    // really really really need an icon
+    close: {
+      _: [
+        "margin-left: 0.6em;",
+        "color: gray;",
+      ],
+      ":hover": [
+        "color: red;",
+        "outline: 1px solid red;",
       ],
     }
   }

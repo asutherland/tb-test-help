@@ -70,7 +70,7 @@ wy.defineWidget({
     //  http://vimcolorschemetest.googlecode.com/svn/colors/proton.vim
     scriptName: [
       "display: inline-block;",
-      "width: 20em;",
+      "width: 13em;",
       "padding: 0 0.5em;",
       "color: #607080;",
     ],
@@ -83,7 +83,7 @@ wy.defineWidget({
     ],
     functionName: [
       "display: inline-block;",
-      "width: 20em;",
+      "width: 16em;",
       "padding: 0 0.5em;",
       "color: #b08020;",
     ],
