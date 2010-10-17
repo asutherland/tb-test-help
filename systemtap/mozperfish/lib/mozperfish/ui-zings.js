@@ -64,7 +64,18 @@ wy.defineWidget({
     overviews: wy.vertList({type: "zing-overview"},
                            ["zinger", "overviewItems"]),
   },
+  style: {
+    root: [
+      "margin: 1px;",
+    ],
+  },
 });
+
+var cssGoodness = {
+  '[goodness="good"]': "",
+  '[goodness="warn"]': "color: goldenrod;",
+  '[goodness="bad"]': "color: red;",
+};
 
 wy.defineWidget({
   name: "zing-overview",
@@ -75,9 +86,11 @@ wy.defineWidget({
   structure: {
     row: {
       what: wy.bind("kind"),
-      count: [wy.bind("count", {goodness: wy.computed("howgood")}),
+      count: [wy.bind("count", {goodness: wy.computed("countgood")}),
               " times"],
-      duration: [wy.bind("duration", "#.##"), " secs"],
+      duration: [wy.bind("duration", "#.##",
+                         {goodness: wy.computed("durationgood")}),
+                 " ms"],
       percentage: [wy.computed("percentage", "#.##"), "% of runtime"],
     },
     kids: wy.vertList({type: "zing-latency"}, "sub"),
@@ -87,11 +100,19 @@ wy.defineWidget({
       return this.obj.duration * 100 /
                this.__context.zing_blamer.endOfTime;
     },
-    howgood: function() {
+    countgood: function() {
       var count = this.obj.count;
       if (count > 1000)
         return "bad";
       if (count > 100)
+        return "warn";
+      return "good";
+    },
+    durationgood: function() {
+      var duration = this.obj.duration;
+      if (duration > 5000)
+        return "bad";
+      if (duration > 1000)
         return "warn";
       return "good";
     },
@@ -101,26 +122,38 @@ wy.defineWidget({
       ":focused": {
         "row": [
           "background-color: #eeeeff;",
+          "outline: 1px blue dotted;",
         ],
       }
     },
+    kids: [
+      "margin-left: 2em;",
+      "border-top: 1px solid gray;",
+      "border-bottom: 1px solid gray;",
+    ],
     row: {
       _: [
-        "display: table-row; width: 100%;",
+        "display: block; width: 100%;",
       ],
       ":hover": [
         "background-color: #eeeeee;",
       ],
     },
-    what: "display: table-cell; width: 16em; padding: 0px 2em;",
-    count: "display: table-cell; width: 6em; padding: 0px 2em;",
-    count0: {
-      '[goodness="good"]': "color: green;",
-      '[goodness="warn"]': "color: yellow;",
-      '[goodness="bad"]': "color: red;",
-    },
-    duration: "display: table-cell; width: 10em; padding: 0px 2em;",
-    percentage: "display: table-cell; padding: 0px 2em;",
+    what: "display: inline-block; width: 16em; padding: 0px 1em;",
+    count: [
+      "display: inline-block; width: 6em; padding: 0px 1em;",
+      "text-align: right;",
+    ],
+    count0: cssGoodness,
+    duration: [
+      "display: inline-block; width: 8em; padding: 0px 1em;",
+      "text-align: right;",
+    ],
+    duration0: cssGoodness,
+    percentage: [
+      "display: inline-block; width: 8em; padding: 0px 1em;",
+      "text-align: right;"
+    ],
   }
 });
 
@@ -130,30 +163,85 @@ wy.defineWidget({
   constraint: {
     type: "zing-latency",
   },
+  emit: ["openTab"],
   structure: {
-    row: {
-      reason: wy.bind("reason"),
-      count: wy.bind("count"),
-      duration: wy.bind("duration"),
-      percentage: wy.bind("percent"),
+    reason: wy.bind("reason"),
+    count: [wy.bind("count", {goodness: wy.computed("countgood")}),
+            " times"],
+    duration: [wy.bind("duration", "#.##",
+                       {goodness: wy.computed("durationgood")}),
+               " ms"],
+    percentage: [wy.computed("percentage", "#.##"), "% of runtime"],
+  },
+  impl: {
+    percentage: function() {
+      return this.obj.duration * 100 /
+               this.__context.zing_blamer.endOfTime;
+    },
+    countgood: function() {
+      var count = this.obj.count;
+      if (count > 1000)
+        return "bad";
+      if (count > 100)
+        return "warn";
+      return "good";
+    },
+    durationgood: function() {
+      var duration = this.obj.duration;
+      if (duration > 5000)
+        return "bad";
+      if (duration > 1000)
+        return "warn";
+      return "good";
+    },
+  },
+  events: {
+    root: {
+      command: function() {
+        
+      }
     },
   },
   style: {
     root: {
-      _: "display: table-row; width: 100%;",
+      _: [
+        "display: block; width: 100%;",
+      ],
       ":hover": [
         "background-color: #eeeeee;",
       ],
       ":focused": [
         "background-color: #eeeeff;",
+        "outline: 1px blue dotted;",
       ],
     },
-    reason: "display: table-cell; width: 15em; padding: 0px 2em; padding-left: 3em;",
-    count: "display: table-cell; width: 4em; padding: 0px 2em;",
-    duration: "display: table-cell; width: 10em; padding: 0px 2em;",
-    percentage: "display: table-cell; padding: 0px 2em;",
+    reason: "display: inline-block; width: 14em; padding: 0px 1em;",
+    count: [
+      "display: inline-block; width: 6em; padding: 0px 1em;",
+      "text-align: right;",
+    ],
+    count0: cssGoodness,
+    duration: [
+      "display: inline-block; width: 8em; padding: 0px 1em;",
+      "text-align: right;",
+    ],
+    duration0: cssGoodness,
+    percentage: [
+      "display: inline-block; width: 8em; padding: 0px 1em;",
+      "text-align: right;"
+    ],
   }
 });
 
+wy.defineWidget({
+  name: "zing-stack-breakout-tab",
+  constraint: {
+    type: "tab",
+    obj: {kind: "stack-breakout"},
+  },
+  structure: {
+  },
+  
+});
 
 }); // end require.def

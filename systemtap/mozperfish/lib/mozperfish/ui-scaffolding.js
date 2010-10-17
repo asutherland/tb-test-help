@@ -145,6 +145,7 @@ wy.defineWidget({
       ],
       ':focused': [
         "background-color: #eeeeff;",
+        "outline: 1px blue dotted;",
       ],
     }
   }
