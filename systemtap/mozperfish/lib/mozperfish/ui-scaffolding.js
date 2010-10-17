@@ -69,27 +69,40 @@ wy.defineWidget({
   receive: {
     switchTab: function(obj) {
       this._switchTab(this.obj.tabs.indexOf(obj));
-    }
+    },
+    openTab: function(obj, showImmediately, relTabObj) {
+      
+    },
   },
   impl: {
+    // we want to happen after the initial update pass so the child tabs exist.
     postInit: function() {
       this._selectedIndex = null;
+      // mark all the tabs except the tab index one as non-focusable.
+      var panels = this.panels_element.children;
+      for (var i = 0; i < panels.length; i++) {
+        panels[i].binding.__focusEnable(false);
+      }
+      // and switch to that one...
       this._switchTab(this.obj.tabIndex);
     },
     _switchTab: function(index) {
       if (this._selectedIndex == index)
         return;
+      var panelNode;
       if (this._selectedIndex != null) {
         this.headers_element.children[this._selectedIndex]
           .removeAttribute("selected");
-        this.panels_element.children[this._selectedIndex]
-          .removeAttribute("selected");
+        panelNode = this.panels_element.children[this._selectedIndex];
+        panelNode.removeAttribute("selected");
+        panelNode.binding.__focusEnable(false);
       }
       this.headers_element.children[index]
         .setAttribute("selected", "true");
-      this.panels_element.children[index]
-        .setAttribute("selected", "true");
-      // ugh, webkit kludge.  I hate you webkit.
+      panelNode = this.panels_element.children[index];
+      panelNode.setAttribute("selected", "true");
+      panelNode.binding.__focusEnable(true);
+      
       this._selectedIndex = index;
     },
   },

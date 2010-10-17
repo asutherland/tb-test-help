@@ -128,8 +128,8 @@ wy.defineWidget({
     },
     kids: [
       "margin-left: 2em;",
-      "border-top: 1px solid gray;",
-      "border-bottom: 1px solid gray;",
+      "border-top: 1px solid #eeeeee;",
+      "border-bottom: 1px solid #eeeeee;",
     ],
     row: {
       _: [
@@ -198,7 +198,11 @@ wy.defineWidget({
   events: {
     root: {
       command: function() {
-        
+        this.emit_openTab({
+          name: this.reason,
+          kind: "stack-breakout",
+          
+        });
       }
     },
   },
