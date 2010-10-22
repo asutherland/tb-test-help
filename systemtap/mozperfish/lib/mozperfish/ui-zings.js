@@ -151,7 +151,7 @@ wy.defineWidget({
     ],
     duration0: cssGoodness,
     percentage: [
-      "display: inline-block; width: 8em; padding: 0px 0.5em;",
+      "display: inline-block; width: 10em; padding: 0px 0.5em;",
       "text-align: right;"
     ],
   }
@@ -231,7 +231,7 @@ wy.defineWidget({
     ],
     duration0: cssGoodness,
     percentage: [
-      "display: inline-block; width: 8em; padding: 0px 0.5em;",
+      "display: inline-block; width: 10em; padding: 0px 0.5em;",
       "text-align: right;"
     ],
   }

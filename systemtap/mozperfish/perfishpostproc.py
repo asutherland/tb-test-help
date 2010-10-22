@@ -231,13 +231,20 @@ class Processor(object):
         obj = None
 
         # eat the lines
+        accum_line = None
         for blob in streamer:
             for line in blob.splitlines():
-                if line[0] != '{':
+                if line[0] == ',' and accum_line:
+                    line = accum_line + line
+                    accum_line = None
+                elif line[0] != '{':
                     print 'Ignoring line:', line.rstrip()
                     continue
                 # transform trailing stuff... (json does not like!)
                 line = line.replace(',}', '}')
+                if line[-1] != '}':
+                    accum_line = line
+                    continue
                 try:
                     obj = json.loads(line)
                 except Exception, e:

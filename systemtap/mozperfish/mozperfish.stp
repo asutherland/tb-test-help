@@ -99,7 +99,7 @@
  *    not clear how the UI would surface them anyways?  I'll look into this when
  *    it comes time to attribute memory usage.
  */
-//@@stapargs:-g,-DMAXSTRINGLEN=1024,-b,-s2,-v,-v,--all-modules
+//@@stapbuildargs:-g,-DMAXSTRINGLEN=1024,-b,-s2,--all-modules
 // "-g" allows us to use embedded C code
 // "-DMAXSTRINGLEN=1024" allows us to process really long strings albeit with
 //    some potential memory bloat.
@@ -107,10 +107,11 @@
 //    userspace crossings (I think... we'll see! :).  Our driver automatically
 //    adds an "-o" option.
 // "-sNUM" NUM megabyte per-cpu buffers for bulk transfer
-// "-v" is used to increase the debug
 // "--all-modules" is used for the latencytap inclusion for its backtracing.
 
 //@@postprocess:perfishpostproc
+// Try and name our output directory from the xpcshell test invoking us.
+//@@namefromargs:_TEST_FILE:/_tests/xpcshell/:"
 
 ////////////////////////////////////////////////////////////////////////////////
 //////// Memory Map Support
@@ -120,10 +121,13 @@
 
 global g_copied_maps;
 
+//@@outputdir:cfg_output_dir
+global cfg_output_dir;
+
 function copy_maps_if_needed() {
   if (!g_copied_maps) {
     g_copied_maps = 1;
-    system(sprintf("cp /proc/%d/maps /tmp/chewtap-%d/maps", pid(), pid()));
+    system(sprintf("cp /proc/%d/maps %s", pid(), cfg_output_dir));
   }
 }
 
@@ -445,7 +449,7 @@ probe vm.munmap {
 // arena_dalloc_large
 // huge_dalloc
 
-
+/*
 
 //// alloc
 
@@ -523,6 +527,7 @@ probe process(@@exe:).statement(@@statement:ref) {
   mem_life_cycle_free(0x12, $ptr, size);
 }
 
+*/
 
 ////////////////////////////////////////////////////////////////////////////////
 //// JavaScript
@@ -872,7 +877,8 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
          now - dawn_of_time, $event, $this);
   // dump a jsstack if we can find one
   dump_jsstack_under_native();
-  printf("}}\n");
+  // dump a native stack too
+  printf(",\"stack\":\"%s\"}}\n", ubacktrace());
 }
 
 
@@ -1061,10 +1067,8 @@ probe process(@@lib:bin/libxul.so).function("nsProxyObjectCallInfo::Run").return
  *
  */
 global lt_priority, lt_reason;
-global traced_pid, dequeue;
+global dequeue;
 global lt_this_sleep;
-
-function log_event:long (p:long) { return (!traced_pid || traced_pid == p) }
 
 # pick out a lt_reason based on the backtrace function names
 function translate:string (bt:string)
@@ -1086,18 +1090,18 @@ function translate:string (bt:string)
 
 probe kernel.trace("deactivate_task") !,
       kernel.function("deactivate_task") {
-  s = task_state($p)
+  s = task_state($p);
   # check to see if task is in appropriate state:
   # TASK_INTERRUPTIBLE      1
   # TASK_UNINTERRUPTIBLE    2
-  if (log_event($p->pid) && (s & 3)) {
+  if (($p->pid == target()) && (s & 3)) {
     dequeue[$p] = gettimeofday_ns();
   }
 }
 
 probe kernel.trace("activate_task") !,
       kernel.function("activate_task") {
-  if (!log_event($p->pid)) next
+  if ($p->pid != target()) next
 
   a = gettimeofday_ns()
   d = dequeue[$p]
@@ -1148,10 +1152,6 @@ probe scheduler.cpu_on {
               d - dawn_of_time, t, translate(backtrace()));
      }
    }
-}
-
-probe begin {
-  traced_pid = target()
 }
 
 # Set up the translations and priorities for each function.
@@ -1774,7 +1774,7 @@ function jsval_to_string(jsval) {
 /*
 function script_info_from_jsfunval(jsfunval) {
   if (jsfunval) {
-    jsfun = @cast(jsfunval, "js::", @@lib:bin/libxul.so)->fslots[0]->data->asPtr;
+    jsfun = @cast(jsfunval, "js::", @@lib:bin/libxul.so)->slots[0]->data->asPtr;
   }
   else {
     jsfun = 0;
@@ -1790,7 +1790,8 @@ function script_info_from_jsfunval(jsfunval) {
 function script_info_from_jsfunobj(jsfunobj) {
   // it is not nunboxed; it is a directly usable pointer!
   return script_info_from_jsfun(
-    @cast(jsfunobj, "JSObject", @@lib:bin/libxul.so)->fslots[0]->data->asPtr);
+           @cast(jsfunobj, "JSObject", @@lib:bin/libxul.so)->privateData);
+    ///fslots[0]->data->asPtr);
 }
 
 /**

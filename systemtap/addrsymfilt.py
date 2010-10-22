@@ -83,6 +83,9 @@ class BinaryInfo(object):
             if addr == lastaddr:
                 continue
 
+
+            rawname = symname
+
             # - trim the symbol name of junk
             if symname.startswith('non-virtual thunk to '):
                 symname = 'thunk:' + symname[21:]
@@ -94,14 +97,19 @@ class BinaryInfo(object):
                     symname = symname[:idxParen+1] + '...' + symname[ridxParen:]
 
             lastaddr = addr
-            self.symbols.append((addr, symname))
+            self.symbols.append((addr, symname, rawname))
 
-    def translateAddress(self, addr, offset):
+    def translateAddress(self, addr, offset, raw=False):
         '''
         @returns (symbol string, overshoot in bytes)
         '''
         if self.symbols is None:
             self._loadSymbols()
+
+        if raw:
+            result_index = 2
+        else:
+            result_index = 1
 
         if offset:
             addr += offset + self.offsetAdjustment
@@ -121,11 +129,11 @@ class BinaryInfo(object):
                 hi = mid
             else:
                 # exact match! hooray!
-                return midtupe[1], 0
+                return midtupe[result_index], 0
         # not an exact match, lo-1 is our index if lo>0
         if lo:
             midtupe = symbols[lo-1]
-            return midtupe[1], addr-midtupe[0]
+            return midtupe[result_index], addr-midtupe[0]
         return None, None
 
 class ProcInfo(object):
@@ -181,7 +189,7 @@ class ProcInfo(object):
 
         mapfile.close()
 
-    def translateAddress(self, addr):
+    def translateAddress(self, addr, raw=False):
         '''
         Map the provided address into a binary's address space using info from
         self.ranges and then ask the binary (a BinaryInfo instance) to
@@ -207,12 +215,12 @@ class ProcInfo(object):
                 binary = midtupe[3]
                 offset = midtupe[2]
                 #print hex(addr), hex(range_start), hex(addr-range_start), 'in', binary.path
-                return binary.translateAddress(addr-range_start, offset)
+                return binary.translateAddress(addr-range_start, offset, raw)
         return None, None
 
     def normalizeHexAddress(self, hexaddr, command, padding=None):
         addr = int(hexaddr, 16)
-        symname, overshoot = self.translateAddress(addr)
+        symname, overshoot = self.translateAddress(addr, raw=(command == 'raw'))
         if symname:
             if command:
                 if command == 'vt':
@@ -243,7 +251,7 @@ class ProcInfo(object):
         '''
         frames = []
         for addr in s.split(' '):
-            frames.append(self.normalizeHexAddress(addr, 'vt'))
+            frames.append(self.normalizeHexAddress(addr, 'raw'))
         return frames
 
 def main(pid):

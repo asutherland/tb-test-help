@@ -18,6 +18,26 @@
 #    that don't match on semantically ridiculous edge-cases.  (Something
 #    involving DWARF processing could also be possible...)
 #
+# - Cramming meta-data about the probes into the script and having it easily
+#    accessible.  For example, knowing the post-processing script to use (and
+#    using it), knowing how to mangle wrapped command arguments to extract a
+#    targeted output directory, etc.
+#
+# - Limitations in the stap/staprun '-c' command in terms of environment
+#    clobbering.
+#
+# - Apparent limitations in stap's ability to cache modules without having to
+#    probe around to make sure things are still the same become workflow
+#    concerns.  Specifically, I want to be able to run a bunch of unit tests
+#    with the same set of probes without any per-test expensive logic happening.
+#    Since we can guarantee that nothing has changed, we really don't need
+#    'stap' to paranoia check anything.  The workflow rationale is that even if
+#    'stap' becomes extra-efficient about the caching, it still is beneficial
+#    to be able to have a 2-phase workflow of 1) build probes then 2) run tests.
+#    Were we to rely on inline caching and have flawed probes, we might not
+#    realize it and have every test expensively try and build the probes and
+#    fail.
+#
 # The net goal is we want to be able to point this script at a systemtap file,
 #  a directory tree structure containing the binaries, and have it be able to
 #  both invoke that file as well as produce a systemtap script that could be
@@ -107,6 +127,12 @@ class ScriptChewer(object):
 
         self.out_lines = None
 
+        # - @@namefromargs support
+        self.suggested_relname = None
+
+        # - @@outdir support
+        self.cached_outdir_expr = None
+
         # - @@statement breakpoint support
         self.src_file_name = None
         self.method_name = None
@@ -115,23 +141,110 @@ class ScriptChewer(object):
         self.cached_file_path = None
         self.cached_file_lines = None
 
-        # - @@lib support
+        # - @@lib support / static variables
         self.exe_path = exe_path
         self.arg_values = [exe_path]
         self.arg_descriptions = ['executable']
         self.known_libs = {'exe': '@1'}
 
-        # -- @@stapargs
-        self.stap_args = []
+        # - runtime variable definitions
+        self.runtime_vars = {}
+        self.runtime_descs = {}
+
+        # -- @@stapbuildargs
+        self.stap_build_args = []
+        # -- @@staprunargs
+        self.stap_run_args = []
 
         # -- @@postprocess
         self.postprocess_script = None
 
-    def _stmt_stapargs(self, val):
-        self.stap_args = val.split(',')
+    def _add_static_arg(self, value, description):
+        '''
+        Define a new stap preprocessor argument with the given value and
+        description, returning the text snippet that should be inserted into the
+        resulting processed script.
+
+        The value is what we pass to the command line invocation of 'stap'
+        and is currently expected to be a string.
+
+        This is done so that the generated .stp scripts are portable.  It does
+        not make the generated modules any more or less cachable since a change
+        in paths or binaries could easily require a module to be rebuilt.
+        (Yes, this is somewhat redundant now given that we are also a driver
+        script that must always be run every time now.)
+        '''
+        self.arg_values.append(value)
+        self.arg_descriptions.append(description)
+        return '@%d' % (len(self.arg_values),)
+
+    def _def_runtime_var(self, name, value, description):
+        '''
+        Define a runtime variable.  This is a key/value pair that we tell to
+        staprun when inserting the compiled module to parameterize it.
+        '''
+        self.runtime_vars[name] = value
+        self.runtime_descs[name] = description
+
+    def _stmt_stapbuildargs(self, val):
+        self.stap_build_args = val.split(',')
+
+    def _stmt_staprunargs(self, val):
+        self.stap_run_args = val.split(',')
 
     def _stmt_postprocess(self, val):
         self.postprocess_script = val
+
+    def _stmt_namefromargs(self, val):
+        '''
+        Allows the script to define a name for the output directory based on
+        a weird custom syntax applied to the arguments intended for the
+        command we are wrapping.
+
+        We break the value up on colons, with the bits being:
+        [search for this string, then search for this string, then slurp from
+        the first character after the end of that string up to but not including
+        the first character of this string.]
+
+        The driving example is xpcshell tests where one of the arguments we are
+        tunneling through is:
+
+        const _TEST_FILE = ["/home/visbrero/rev_control/hg/comm-central/obj-thunderbird-debug/mozilla/_tests/xpcshell/storage/test/unit/test_statement_executeAsync.js"];
+
+        That fellow follows a '-e' argument that says to execute that JS
+        snippet.  So we want to be able to grab the relative path
+        "storage/test/unit/test_statement_executeAsync.js" out of there.  The
+        script line we expect to accomplish that is:
+        //@@namefromargs:_TEST_FILE:/_tests/xpcshell/:"
+        '''
+        bits = val.split(':')
+        seek_strs = bits[:-1]
+        term_str = bits[-1]
+        
+        # flatten the sub-command's arugments out.
+        arg_str = ' '.join(self.context.cmd_args)
+        idx = 0
+        for seek_str in seek_strs:
+            idx = arg_str.find(seek_str, idx)
+            if idx == -1:
+                raise Error('Unable to find seek str: ' + seek_str)
+            idx += len(seek_str)
+        term_idx = arg_str.find(term_str, idx)
+        
+        self.context.output_dir = os.path.join(self.context.output_base_dir,
+                                               arg_str[idx:term_idx])
+
+    def _stmt_outdir(self, val):
+        '''
+        Associates the given global variable name with the output directory.
+        Using this mechanism obligates the run mechanism to pass (or cause to
+        be passed) an explicit value for the global variable to staprun.
+        
+        You would use this if your script is going to cause files to be written
+        somewhere, like if you were to copy the /proc/PID/maps file.
+        '''
+        self._def_runtime_var(val, self.context.output_dir,
+                              "output directory");
 
     def _stmt_file(self, val):
         '''
@@ -242,11 +355,10 @@ class ScriptChewer(object):
             return self.known_libs[val]
 
         path = self.context.find_lib_file(val)
-        self.arg_values.append(path)
-        self.arg_descriptions.append("Path to lib '%s'" % (val,))
-        rval = '@%d' % (len(self.arg_values),)
-        self.known_libs[val] = rval
-        return rval
+        argexpr = self._add_arg(path, 
+                                "Path to lib '%s'" % (val,))
+        self.known_libs[val] = argexpr
+        return argexpr
 
     def chew_script(self, path):
         expr_re = re.compile(r'@@([^:]+):([^\)]*)([,\)])')
@@ -284,6 +396,8 @@ class ScriptChewer(object):
         if self.script_src_path == out_path:
             raise Exception("You are trying to overwrite the source file!!")
         
+        self.written_script_path = out_path
+
         if os.path.isfile(out_path):
             f = open(out_path, 'r')
             cur_contents = f.read()
@@ -299,8 +413,16 @@ class ScriptChewer(object):
             f.write(out_str)
             f.close()
             wrote_it = True
+            print '!!!!!!!!!!!! REWRITING !!!!!!!!!!!!!!'
+            print '!!!!!!!!!!!! REWRITING !!!!!!!!!!!!!!'
+            print '!!!!!!!!!!!! REWRITING !!!!!!!!!!!!!!'
+        else:
+            print '!!! FILES MATCH !!!', out_path
 
         self.out_lines = None
+
+        # this is useful to know whether we can try and reuse a kernel module
+        self.freshly_written_file = wrote_it
 
         return wrote_it
 
@@ -383,25 +505,66 @@ class BulkProcessor(object):
         self.next_blobs_by_file[min_idx] = next_blob
 
         return min_blob
-        
 
+# STAP_BIN_DIR = '/usr/bin'
+STAP_BIN_DIR = '/local/code/systemtap/bin'
 
-class MozMain(object):
-    '''
-    This command-line driver is mozilla biased.  Go get your own driver, other
-    people!  (I will genericize this a little bit eventually).
-    '''
-
+class SystemtapDriverThing(object):
     usage = '''usage: %prog systemtapscript PID/executable [executable args]
     '''
+
+    def __init__(self):
+        self.stap_include_dirs = []
 
     def _build_parser(self):
         parser = optparse.OptionParser(usage=self.usage)
 
         parser.add_option('--re-run',
+                          help='Re-run the chew process for the given directory.',
                           dest='rerunpath',
                           default=None)
+        parser.add_option('--out-base-dir',
+                          help='Specify a base output directory.',
+                          dest='output_base_dir',
+                          default='/tmp/mozperfish')
+        
+
         return parser
+
+    def build_module(self, chewer):
+        '''
+        Run 'stap' telling it to build a module for insertion by staprun, but
+        do not run the module at this time.
+        '''
+        stap_args = [os.path.join(STAP_BIN_DIR, 'stap'),
+                     '-p4']
+
+        for incl_dir in self.stap_include_dirs:
+            stap_args.append('-I')
+            stap_args.append(incl_dir)
+
+        # the script tells us what arguments it wants
+        stap_args.extend(chewer.stap_build_args)
+
+        # the built script
+        stap_args.append(chewer.written_script_path)
+        # the library paths
+        stap_args.extend(chewer.arg_values)
+
+        # give it a pipe for standard input so it keeps its mitts off our
+        #  control-c.
+        # give it a pipe for stdout so we can read the location of where the
+        #  cached output went
+        # give it a pipe for stderr so we can see any interesting error
+        #  messages but reduce our burden of confusing that with the 'answer'
+        #  of where the module ended up
+        pope = subprocess.Popen(stap_args,
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+        stdout_data, stderr_data = pope.communicate()
+        
+        
 
     def run(self):
         print '!!!', os.getpid(), 'ARGS YOU GAVE ME:', repr(sys.argv)
@@ -437,28 +600,41 @@ class MozMain(object):
             pid = None
             exe_path = args[1]
 
-        # systemtap = linux
+        # systemtap === linux
         pathparts = exe_path.split('/')
 
-        # comm-central?
-        if pathparts[-4] == 'mozilla':
-            objdir = '/'.join(pathparts[:-4])
-        # mozilla-central
-        else:
-            objdir = '/'.join(pathparts[:-3])
+        objdir = self._figure_out_objdir(pathparts)
         
         # put our built script in the objdir...
         built_tapscript = os.path.join(objdir, os.path.basename(tapscript))
 
         # -- BUILD the tapscript
-        context = MozChewContext(objdir)
+        context = self._make_context(objdir)
+        context.output_base_dir = options.output_base_dir
+
+        if options.rerunpath:
+            trace_dir = context.output_dir = options.rerunpath
+            dorunrun = False
+        else:
+            # provide a reasonable default for the directory
+            trace_dir = os.path.join(options.output_base_dir,
+                                     'chewtap-%d' % (naming_pid,))
+            if os.path.exists(trace_dir):
+                trace_dir += '-%d' % (int(time.time()),)
+            context.output_dir = trace_dir
+        
+        context.cmd_args = args[1:]
         chewer = ScriptChewer(context, exe_path)
         chewer.chew_script(tapscript)
-        chewer.maybe_write_script(built_tapscript)
+        # Avoid touching the output file in rerun mode (although we do need
+        #  to process it for side-effects)
+        if dorunrun:
+            chewer.maybe_write_script(built_tapscript)
+            trace_dir = context.output_dir
+            if not os.path.exists(trace_dir):
+                os.makedirs(trace_dir)
 
         # -- FORK if running and not in attached mode
-        if options.rerunpath:
-            dorunrun = False
 
         if dorunrun:
             if not attachMode:
@@ -492,38 +668,28 @@ class MozMain(object):
 
         # -- FETCH required data about the running process.
         # we need a temporary directory to hold our data for this invocation
-        
-        if options.rerunpath:
-            tmp_dir = options.rerunpath
-            dorunrun = False
-        else:
-            tmp_dir = '/tmp/chewtap-%d' % (naming_pid,)
-            if os.path.exists(tmp_dir):
-                tmp_dir += '-%d' % (int(time.time()),)
-            os.mkdir(tmp_dir)
-
+        if dorunrun:
             # we need the proc maps files to convert pointers
             if attachMode:
                 shutil.copyfile(os.path.join(proc_dir, 'maps'),
-                                os.path.join(tmp_dir, 'maps'))
+                                os.path.join(trace_dir, 'maps'))
+        
         
         # -- RUN systemtap
         # - build args
         # assume the user is in the stapdev group
-        stap_args = ['/usr/bin/stap']
+        stap_args = [os.path.join(STAP_BIN_DIR, 'staprun')]
 
         # add this python script's directory as an include dir for .h files.
         if '/' in sys.argv[0]:
-            stap_args.extend(['-I', os.path.dirname(sys.argv[0])])
+            self.stap_include_dirs.append(os.path.dirname(sys.argv[0]))
 
         # the script tells us what arguments it wants
-        stap_args.extend(chewer.stap_args)
-        if '-b' in chewer.stap_args:
-            stap_args.append('-o %s' % (os.path.join(tmp_dir, 'bulk'),))
-        # the built script
-        stap_args.append(built_tapscript)
-        # the library paths
-        stap_args.extend(chewer.arg_values)
+        stap_args.extend(chewer.stap_run_args)
+        # while -b is a build-time option (that can be overridden at runtime),
+        #  -o is a runtime flag.
+        if '-b' in chewer.stap_build_args:
+            stap_args.append('-o %s' % (os.path.join(trace_dir, 'bulk'),))
         
         # - run
         # The expected use-case is to hit control-c when done, at which point
@@ -622,10 +788,14 @@ class MozMain(object):
                         print '!!! Happy conclusion!'
                         sys.stdout.flush()
                         pope.terminate()
+                        # try and make sure we wait for staprun to clean up
+                        #  after itself, and output anything interesting it
+                        #  says.
+                        print pope.communicate()[0]
                         break
                     else: # it was stap!
                         print '!!! stap died', dead_status, 'not post-processing'
-                        print 'Any results will be in', tmp_dir
+                        print 'Any results will be in', trace_dir
                         sys.stdout.flush()
                         if kid_pid:
                             os.kill(kid_pid, 9)
@@ -638,9 +808,9 @@ class MozMain(object):
                     os.kill(kid_pid, 9)
 
         # -- POST PROCESS
-        if options.rerunpath and chewer.postprocess_script:
+        if chewer.postprocess_script:
             # provide it with the address sym filter; assuming required.
-            procinfo = addrsymfilt.ProcInfo(pid, os.path.join(tmp_dir, 'maps'))
+            procinfo = addrsymfilt.ProcInfo(pid, os.path.join(trace_dir, 'maps'))
 
             search_path = [os.path.dirname(os.path.abspath(tapscript))]
             search_path.extend(sys.path)
@@ -655,11 +825,25 @@ class MozMain(object):
                     fp.close()
 
             if module:
-                bulkproc = BulkProcessor(tmp_dir)
+                bulkproc = BulkProcessor(trace_dir)
                 modproc = module.Processor()
-                modproc.process(tmp_dir, bulkproc, procinfo)
+                modproc.process(trace_dir, bulkproc, procinfo)
         
         return 0
+
+class MozMain(SystemtapDriverThing):
+    def _figure_out_objdir(self, pathparts):
+        # comm-central?
+        if pathparts[-4] == 'mozilla':
+            objdir = '/'.join(pathparts[:-4])
+        # mozilla-central
+        else:
+            objdir = '/'.join(pathparts[:-3])
+
+        return objdir
+
+    def _make_context(self, objdir):
+        return MozChewContext(objdir)
 
 if __name__ == '__main__':
     # change to the directory of the script if specified absolutely...
