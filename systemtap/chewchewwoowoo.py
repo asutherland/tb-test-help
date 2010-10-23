@@ -749,11 +749,11 @@ class SystemtapDriverThing(object):
             
         # -- Run
         if self.doRun:
-            self.run(chewer)
+            self.run(chewer, args)
 
         # -- Process
         if self.doProcess:
-            self.post_process(chewer, pid)
+            self.post_process(chewer, self.run_pid)
         return 0
 
 
@@ -796,7 +796,6 @@ class SystemtapDriverThing(object):
 
         if options.rerunpath:
             trace_dir = context.output_dir = options.rerunpath
-            dorunrun = False
         else:
             # provide a reasonable default for the directory
             # (the chewer may clobber this)
@@ -840,7 +839,7 @@ class SystemtapDriverThing(object):
         shutil.copyfile(os.path.join(self.proc_dir, 'maps'),
                         os.path.join(self.context.output_dir, 'maps'))
 
-    def run(self, chewer):
+    def run(self, chewer, args):
         '''
         Handle either spawning a child process or attaching to an existing
         process while (either way) spinning up an staprun instance.
@@ -894,126 +893,134 @@ class SystemtapDriverThing(object):
         # while -b is a build-time option (that can be overridden at runtime),
         #  -o is a runtime flag.
         if '-b' in chewer.stap_build_args:
-            stap_args.append('-o %s' % (os.path.join(trace_dir, 'bulk'),))
+            stap_args.append('-o%s' % (os.path.join(chewer.context.output_dir,
+                                                    'bulk'),))
         
         # - run
         # The expected use-case is to hit control-c when done, at which point
         #  we want to tell stap to close up shop.
-        if dorunrun:
-            # If we're not attaching, then we need to spin the dude up.  staprun
-            #  is being a jerk in terms of not screwing up the environment,
-            #  so we're doing it ourself.  We really want to constrain the
-            #  stap invocation to the right process, so we fork so we can know
-            #  the child pid before execing.  
+        # If we're not attaching, then we need to spin the dude up.  staprun
+        #  is being a jerk in terms of not screwing up the environment,
+        #  so we're doing it ourself.  We really want to constrain the
+        #  stap invocation to the right process, so we fork so we can know
+        #  the child pid before execing.  
 
-            # we need a -v so we can know when it has gone active.
-            stap_args.append('-v')
+        # we need a -v so we can know when it has gone active.
+        stap_args.append('-v')
+        stap_args.append('-v')
 
-            # - spin up
-            stap_args.extend(['-x', '%d' % (pid,)])
-            print ''
-            print '!!! Invoking:', repr(stap_args)
-            print ''
+        # - spin up
+        stap_args.extend(['-x', '%d' % (pid,)])
 
-            # give it a pipe for standard input so it keeps its mitts off our
-            #  control-c.
-            # give it a pipe for stdout so we can tell when it has gotten going
-            pope = subprocess.Popen(stap_args,
-                                    stdin=subprocess.PIPE,
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT)
-            try:
-                # - wait for 'stap' to successfully load the stuff
-                # (make the stdout non-blocking)
-                stap_stdout_fd = pope.stdout.fileno()
-                fl = fcntl.fcntl(stap_stdout_fd, fcntl.F_GETFL)
-                fcntl.fcntl(stap_stdout_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+        # - add the module path and the module arguments
+        stap_args.append(self.probe_module_path)
+        for runtime_var_name, runtime_var_value in chewer.runtime_vars.items():
+            stap_args.append(runtime_var_name + '=' + runtime_var_value)
 
-                # (keep reading stdout and printing the output until we see
-                #  the 'go' output or the process dies.)
-                buf = ''
-                while True:
-                    try:
-                        while True:
-                            nbuf = pope.stdout.read(1024)
-                            if not nbuf:
-                                break
-                            sys.stdout.write(nbuf)
-                            buf += nbuf                        
-                    except Exception, e:
-                        # this happens when we run out of things to read
-                        pass
+        print ''
+        print '!!! Invoking:', repr(stap_args)
+        print ''
 
-                    if buf.find('Pass 5: starting run.') != -1:
-                        break
-                    if pope.poll() is not None:
-                        # he died!
-                        print 'stap creation failed; killing child and leaving'
-                        if kid_pid:
-                            os.kill(kid_pid, 9)
-                        sys.exit(1)
-                    # truncate the buf on newline bounds
-                    idx_newline = buf.rfind('\n')
-                    if idx_newline != -1:
-                        buf = buf[idx_newline + 1:]
+        # give it a pipe for standard input so it keeps its mitts off our
+        #  control-c.
+        # give it a pipe for stdout so we can tell when it has gotten going
+        pope = subprocess.Popen(stap_args,
+                                stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT)
+        try:
+            # - wait for 'stap' to successfully load the stuff
+            # (make the stdout non-blocking)
+            stap_stdout_fd = pope.stdout.fileno()
+            fl = fcntl.fcntl(stap_stdout_fd, fcntl.F_GETFL)
+            fcntl.fcntl(stap_stdout_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
-                    # sorta busy-wait...
-                    time.sleep(0.1)
+            # (keep reading stdout and printing the output until we see
+            #  the 'go' output or the process dies.)
+            buf = ''
+            while True:
+                try:
+                    while True:
+                        nbuf = pope.stdout.read(1024)
+                        if not nbuf:
+                            break
+                        sys.stdout.write(nbuf)
+                        sys.stdout.flush()
+                        buf += nbuf                        
+                except Exception, e:
+                    # this happens when we run out of things to read
+                    pass
 
-                # Write to the child so it can begin its exciting life as being
-                #  obliterated and replaced by the actual executable we want
-                #  to run.
-                if not attachMode:
-                    # flush our output before telling the child so that our
-                    #  output serializes somewhat...
-                    print '!!!', os.getpid(), 'writing to child!'
-                    sys.stdout.flush()
-                    sys.stderr.flush()
-                    os.write(parent_write_pipe, 'x')
+                if buf.find('probe_start() returned 0') != -1:
+                    break
+                if pope.poll() is not None:
+                    # he died!
+                    print 'stap creation failed; killing child and leaving'
+                    if kid_pid:
+                        os.kill(kid_pid, 9)
+                    sys.exit(1)
+                # truncate the buf on newline bounds
+                idx_newline = buf.rfind('\n')
+                if idx_newline != -1:
+                    buf = buf[idx_newline + 1:]
 
-                print '!!! Hit control-C to terminate the tapscript'
+                # sorta busy-wait...
+                time.sleep(0.1)
+
+            # Write to the child so it can begin its exciting life as being
+            #  obliterated and replaced by the actual executable we want
+            #  to run.
+            if self.runMode == 'spawn':
+                # flush our output before telling the child so that our
+                #  output serializes somewhat...
+                print '!!!', os.getpid(), 'writing to child!'
                 sys.stdout.flush()
+                sys.stderr.flush()
+                os.write(parent_write_pipe, 'x')
 
-                
-                # wait for something to die off doing our own communicate()
-                #  style loop to make sure the stap invocation does not clog
-                #  itself up somehow.
-                while True:
-                    try:
-                        while True:
-                            buf = pope.stdout.read(1024)
-                            if not buf:
-                                break
-                            sys.stdout.write(buf)
-                            sys.stdout.flush()
-                    except Exception, e:
-                        pass
+            print '!!! Hit control-C to terminate the tapscript'
+            sys.stdout.flush()
 
-                    dead_pid, dead_status = os.waitpid(-1, os.WNOHANG)
-                    if dead_pid == 0:
-                        time.sleep(0.1)
-                    elif dead_pid == kid_pid:
-                        print '!!! Happy conclusion!'
+
+            # wait for something to die off doing our own communicate()
+            #  style loop to make sure the stap invocation does not clog
+            #  itself up somehow.
+            while True:
+                try:
+                    while True:
+                        buf = pope.stdout.read(1024)
+                        if not buf:
+                            break
+                        sys.stdout.write(buf)
                         sys.stdout.flush()
-                        pope.terminate()
-                        # try and make sure we wait for staprun to clean up
-                        #  after itself, and output anything interesting it
-                        #  says.
-                        print pope.communicate()[0]
-                        break
-                    else: # it was stap!
-                        print '!!! stap died', dead_status, 'not post-processing'
-                        print 'Any results will be in', trace_dir
-                        sys.stdout.flush()
-                        if kid_pid:
-                            os.kill(kid_pid, 9)
-                        sys.exit(1)
+                except Exception, e:
+                    pass
 
-            except KeyboardInterrupt:
-                # (python2.6 required)
-                pope.terminate()
-                if kid_pid:
-                    os.kill(kid_pid, 9)
+                dead_pid, dead_status = os.waitpid(-1, os.WNOHANG)
+                if dead_pid == 0:
+                    time.sleep(0.1)
+                elif dead_pid == kid_pid:
+                    print '!!! Happy conclusion!'
+                    sys.stdout.flush()
+                    pope.terminate()
+                    # try and make sure we wait for staprun to clean up
+                    #  after itself, and output anything interesting it
+                    #  says.
+                    print pope.communicate()[0]
+                    break
+                else: # it was stap!
+                    print '!!! stap died', dead_status, 'not post-processing'
+                    print 'Any results will be in', chewer.context.output_dir
+                    sys.stdout.flush()
+                    if kid_pid:
+                        os.kill(kid_pid, 9)
+                    sys.exit(1)
+
+        except KeyboardInterrupt:
+            # (python2.6 required)
+            pope.terminate()
+            if kid_pid:
+                os.kill(kid_pid, 9)
 
     def post_process(self, chewer, pid):
         if chewer.postprocess_script:

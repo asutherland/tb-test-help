@@ -298,7 +298,8 @@ wy.defineWidget({
     cost: {
       duration: [wy.bind("cost", "#.##"), " ms"],
       count: [wy.bind("count", "#"), " times"],
-    }
+    },
+    clearout: {},
   },
   style: {
     root: [
@@ -311,6 +312,9 @@ wy.defineWidget({
       "text-align: right;",
     ],
     duration: [
+    ],
+    clearout: [
+      "clear: both;",
     ],
   },
 });
