@@ -38,12 +38,12 @@
 /**
  * Process the mozperfish JSON blob to establish causal chains.  The goal is to
  *  assign every event-loop event to a containing a causal chain.
- * 
+ *
  * Chains are established and linked by trace events that will cause a future
  *  event loop event to execute and the trace events that are the execution
  *  of that promised future event.  Chains may form graphs if a 'chain' causes
  *  multiple outstanding events to exist concurrently.
- * 
+ *
  * For example, code 'foo' may issue an asynchronous database query which will
  *  trigger a callback.  If the active event for 'foo' terminates without
  *  scheduling any other events, we observe events for the execution of the
@@ -92,7 +92,7 @@ var MARK_SELECTED = 1, MARK_ANCESTOR = 2, MARK_DESCENDENT = 3;
  * Simple graph atom for the first-pass of causal chain construction.  There is
  *  one cancelable ChainLink for every event top-level event and it has zero or
  *  more links to other ChainLinks.
- * 
+ *
  * These links will be analyzed and transformed into ChainPieces in a subsequent
  *  processing pass.
  */
@@ -150,7 +150,7 @@ Zing.prototype = {
 
 /**
  * Instantiate a new causal chainer for the given perfish blob.
- * 
+ *
  * @args[
  *   @param[perfishBlob PerfishBlob]
  * ]
@@ -158,16 +158,16 @@ Zing.prototype = {
 function CausalChainer(perfishBlob, logProcessor) {
   this.perfishBlob = perfishBlob;
   this.logProcessor = logProcessor;
-  
+
   this.rootLinks = [];
-  
+
   // Broad, non-nestable phases of operation.  currently assumed to be
   //  populated by the logProcessor.
   this.phases = [];
-  
+
   // Nestable execution contexts associated with specific threads.
   this.contexts = [];
-  
+
   // Non-nestable specific events with duration associated with specific
   //  threads.  These are interesting even if they are really short (ex: GC),
   //  but may be aggregatable if a lot of them happen in a short time period.
@@ -176,7 +176,7 @@ function CausalChainer(perfishBlob, logProcessor) {
   //  can maybe make a reference to "the ultimate zing", which watchers of
   //  sealab 2021 will appreciate.
   this.zings = [];
-  
+
   // Count the number of events that get pruned out of the graph but that
   //  might merit investigation if this number gets really high.
   this.pruneCount = 0;
@@ -228,12 +228,12 @@ CausalChainer.prototype = {
     // -- logic to pick off the events in increasing time order
     var threads = this.perfishBlob.threads;
     var eventLists = [], eventOffsets = [], iThread;
-    
+
     for (iThread = 0; iThread < threads.length; iThread++) {
       var thread_events = threads[iThread].levents;
       // Mark the last event as boring if it's a thread-shutdown event post
       //  so that we can just ignore it.  (It's boring.)
-      if (thread_events.length && 
+      if (thread_events.length &&
           thread_events[thread_events.length - 1].type == EV_ELOOP_SCHEDULE)
         thread_events[thread_events.length - 1].boring = true;
 
@@ -258,19 +258,22 @@ CausalChainer.prototype = {
       }
       return min_event;
     }
-    
+
     // -- processing loop
     var event, semEvent, link, thread_link, parent_link, death = 0, links;
     while ((event = get_next_event())) {
       // save off the thread index; if we unbox we may lose access to the info
       //  because we only poke it back into top-level events.
       var thread_idx = event.thread_idx;
-      
+
       // if this isn't an event loop thing, then the event belongs to the
       //  containing thread's causal chain which we may need to create...
       if (event.type !== EV_ELOOP_EXECUTE) {
-        // do not generate chains for boring events...
-        if (("boring" in event) && event.boring) {
+        // do not generate (synthetic) chains for:
+        // - boring events
+        // - events that will generate a zing
+        if ((("boring" in event) && event.boring) ||
+            (event.type === EV_GC || event.type === EV_LATENCY)) {
           this._walk_events(event, null);
           continue;
         }
@@ -309,7 +312,7 @@ CausalChainer.prototype = {
           console.warn("encountered unknown event id!",
                        event.data.eventId, event);
         }
-        
+
         // - killable!
         // Some events should just be pruned...
         // nsTimerEvents that do not fire, for example
@@ -321,7 +324,7 @@ CausalChainer.prototype = {
           this.pruneCount++;
           continue;
         }
-        
+
         // - unwrappable!
         // (The theory is that the event we are unwrapping is not bringing any
         //  information to the party that is not already contained inside its
@@ -349,7 +352,7 @@ CausalChainer.prototype = {
                 continue;
               }
               break;
-            
+
             case EV_INPUT_READY:
             case EV_INPUT_PUMP:
               origin_event = event;
@@ -361,11 +364,11 @@ CausalChainer.prototype = {
             event.thread_idx = origin_event.thread_idx;
           }
         }
-        
+
         link = new ChainLink(event);
         parent_link.outlinks.push(link);
         link.inlinks.push(parent_link);
-        
+
         // unwrap JS crossings...
         if (event.children.length === 1 &&
             (event.children[0].type === EV_XPCJS_CROSS ||
@@ -377,19 +380,19 @@ CausalChainer.prototype = {
       }
     }
   },
-  
+
   /**
    * Walk an event and all of its children in the context of a given causal
    *  link looking for the creation of new events.
    */
-  _walk_events: function CausalChainer__walk_events(event, link, 
+  _walk_events: function CausalChainer__walk_events(event, link,
                                                     thread_idx, context) {
     var new_context, kid_link = link, zing;
     if (thread_idx === undefined)
       thread_idx = event.thread_idx;
     else
       event.thread_idx = thread_idx;
-    
+
     // -- scheduling
     if (event.type === EV_TIMER_INSTALLED) {
       // A given timer can only have one active thing at a time so the
@@ -430,12 +433,12 @@ CausalChainer.prototype = {
           context.children.push(new_context);
         }
         context = new_context;
-        
+
         context.start = event;
         context.event = event;
         context.name = event.data.scriptName;
         context.thread_idx = thread_idx;
-        
+
         // create a link for this dude at least for raw visualization purposes
         kid_link = new ChainLink(event);
         link.outlinks.push(kid_link);
@@ -464,10 +467,10 @@ CausalChainer.prototype = {
       last_event = recurse_retvals[0];
       kid_link = recurse_retvals[1];
     }
-    
+
     if (new_context)
       new_context.end = last_event;
-    
+
     return [last_event, kid_link];
   },
 };
