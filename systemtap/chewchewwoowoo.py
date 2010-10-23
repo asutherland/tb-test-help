@@ -753,6 +753,12 @@ class SystemtapDriverThing(object):
 
         # -- Process
         if self.doProcess:
+            # If we are in 'process' mode, the output directory is explicitly
+            #  told to us, which is important because there is no other way
+            #  we can remotely figure this out correctly.  (Which is also why
+            #  we clobber this way down here.)
+            if self.mode == 'process':
+                chewer.context.output_dir = options.rerunpath
             self.post_process(chewer, self.run_pid)
         return 0
 
@@ -820,8 +826,12 @@ class SystemtapDriverThing(object):
         # build and run require updating the script (if required)
         if self.mode != 'process':
             chewer.maybe_write_script(built_tapscript)
-            if not os.path.exists(self.context.output_dir):
-                os.makedirs(self.context.output_dir)
+            # nuke the directory to avoid stale contents.
+            if os.path.exists(self.context.output_dir):
+                # but only if we're sure the path is remotely safe...
+                if self.context.output_dir.startswith('/tmp/'):
+                    shutil.rmtree(self.context.output_dir, True)
+            os.makedirs(self.context.output_dir)
 
         return chewer
 

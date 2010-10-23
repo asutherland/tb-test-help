@@ -185,6 +185,7 @@ class ProcInfo(object):
             addr_low, addr_high = map(hexparse, bits[0].split('-'))
             offset = hexparse(bits[2])
 
+            #print 'mapped', hex(addr_low), hex(addr_high), hex(offset), binary.path
             self.ranges.append((addr_low, addr_high, offset, binary))
 
         mapfile.close()
