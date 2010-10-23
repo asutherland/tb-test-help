@@ -36,7 +36,9 @@
 #    to be able to have a 2-phase workflow of 1) build probes then 2) run tests.
 #    Were we to rely on inline caching and have flawed probes, we might not
 #    realize it and have every test expensively try and build the probes and
-#    fail.
+#    fail.  (Currently, stap does a reasonable job of caching but it still takes
+#    on the order of 5 seconds or so for our super expensive script with hot
+#    cache.)
 #
 # The net goal is we want to be able to point this script at a systemtap file,
 #  a directory tree structure containing the binaries, and have it be able to
@@ -46,6 +48,7 @@
 import imp, optparse, os.path, re, shutil, struct, subprocess, sys, time
 import fcntl
 import addrsymfilt
+import json
 
 class ChewContext(object):
     '''
@@ -84,8 +87,9 @@ class MozChewContext(ChewContext):
         if not os.path.isdir(objdir):
             raise Exception("objdir %s does not exist!" % (objdir,))
 
-        # -- Binaries
+        self.objdir = objdir
 
+        # -- Binaries
         # From thunderbird's perspective, everything lives in
         #  objdir/mozilla/dist.  From firefox's persepctive, it's just
         #  objdir/dist
@@ -122,7 +126,7 @@ class ScriptChewer(object):
     - Allocating command-line argument slots (chew-time) and performing path
        resolution for libraries (invocation-time) using the @@lib expression.
     '''
-    def __init__(self, context, exe_path):
+    def __init__(self, context):
         self.context = context
 
         self.out_lines = None
@@ -142,8 +146,7 @@ class ScriptChewer(object):
         self.cached_file_lines = None
 
         # - @@lib support / static variables
-        self.exe_path = exe_path
-        self.arg_values = [exe_path]
+        self.arg_values = [context.exe_path]
         self.arg_descriptions = ['executable']
         self.known_libs = {'exe': '@1'}
 
@@ -227,14 +230,18 @@ class ScriptChewer(object):
         for seek_str in seek_strs:
             idx = arg_str.find(seek_str, idx)
             if idx == -1:
-                raise Error('Unable to find seek str: ' + seek_str)
+                # this is only acceptable if we are not in a run mode
+                if self.context.mode != 'run':
+                    return
+                # if we are running, this is fatal and we need to explode
+                raise Exception('Unable to find seek str: ' + seek_str)
             idx += len(seek_str)
         term_idx = arg_str.find(term_str, idx)
         
         self.context.output_dir = os.path.join(self.context.output_base_dir,
                                                arg_str[idx:term_idx])
 
-    def _stmt_outdir(self, val):
+    def _stmt_outputdir(self, val):
         '''
         Associates the given global variable name with the output directory.
         Using this mechanism obligates the run mechanism to pass (or cause to
@@ -334,7 +341,7 @@ class ScriptChewer(object):
         bits = val.split('|')
         binary_names = set(bits[:-1])
         failover_lib = bits[-1]
-        exe_name = os.path.basename(self.exe_path)
+        exe_name = os.path.basename(self.context.exe_path)
 
         # written for clarity, not conciseness
         if negated:
@@ -355,12 +362,13 @@ class ScriptChewer(object):
             return self.known_libs[val]
 
         path = self.context.find_lib_file(val)
-        argexpr = self._add_arg(path, 
-                                "Path to lib '%s'" % (val,))
+        argexpr = self._add_static_arg(path, "Path to lib '%s'" % (val,))
         self.known_libs[val] = argexpr
         return argexpr
 
     def chew_script(self, path):
+        self.input_script_path = path
+
         expr_re = re.compile(r'@@([^:]+):([^\)]*)([,\)])')
         def expr_helper(match):
             exprfunc = getattr(self, '_expr_%s' % (match.group(1),))
@@ -508,6 +516,9 @@ class BulkProcessor(object):
 
 # STAP_BIN_DIR = '/usr/bin'
 STAP_BIN_DIR = '/local/code/systemtap/bin'
+# (be nice to people who aren't me)
+if not os.path.isdir(STAP_BIN_DIR):
+    STAP_BIN_DIR = '/usr/bin'
 
 class SystemtapDriverThing(object):
     usage = '''usage: %prog systemtapscript PID/executable [executable args]
@@ -519,6 +530,11 @@ class SystemtapDriverThing(object):
     def _build_parser(self):
         parser = optparse.OptionParser(usage=self.usage)
 
+        parser.add_option('--build',
+                          dest='mode', action='store_const', const='build',
+                          default='run',
+                          help='Build the module but do not run it.')
+                          
         parser.add_option('--re-run',
                           help='Re-run the chew process for the given directory.',
                           dest='rerunpath',
@@ -531,10 +547,98 @@ class SystemtapDriverThing(object):
 
         return parser
 
+    def can_reuse_module(self, chewer):
+        '''
+        Return True if we can reuse the module and make sure the state is all
+        available for the run stage.
+        '''
+        # Look for the JSON file in the object dir root where we store our
+        #  chewed script file that tells us where the module lives and what
+        #  the compilation arguments were.
+
+        # - New .stp file? Cannot reuse!
+        if chewer.freshly_written_file:
+            return False
+
+        cache_meta_path = os.path.join(chewer.context.objdir,
+                                       'stap_cache_meta.json')
+
+        # - No cache meta-data file? Cannot reuse!
+        if not os.path.isfile(cache_meta_path):
+            return False
+
+        # - The meta-data file's timestamp is older than the stp file?
+        cache_ts = os.stat(cache_meta_path).st_mtime
+        script_ts = os.stat(chewer.written_script_path).st_mtime
+        if script_ts > cache_ts:
+            return False
+
+        # (Load the meta-data)
+        try:
+            f = open(cache_meta_path, 'r')
+            try:
+                meta = json.load(f)
+            finally:
+                f.close()
+        except:
+            # if the file is full of gibberish, it's no good!
+            return False
+
+        # - The module went away?
+        module_path = meta['module']
+        if not os.path.isfile(module_path):
+            return False
+
+        # - The arguments changed?
+        # - The files referenced by the arguments changed?
+        meta_args = meta['args']
+        if len(chewer.arg_values) != len(meta_args):
+            return False
+        for i, cur_arg_value in enumerate(chewer.arg_values):
+            meta_arg_info = meta_args[i]
+            # value
+            if meta_arg_info['value'] != cur_arg_value:
+                print 'Arg', i, 'mismatch!'
+                print '  Current:', cur_arg_value
+                print '  Cached: ', meta_arg_info['value']
+                return False
+            # timestamp
+            if os.stat(cur_arg_value).st_mtime != meta_arg_info['mtime']:
+                print 'Arg', i, 'timestamp problem on', cur_arg_value
+                return False
+        
+        # - We can reuse!  Stash the module name for the run step.
+        self.probe_module_path = module_path
+        return True
+        
+    def _write_module_cache(self, chewer):
+        meta = {}
+        meta['module'] = self.probe_module_path
+        meta['args'] = meta_args = []
+        for cur_arg_value in chewer.arg_values:
+            meta_arg_info = {}
+            meta_arg_info['value'] = cur_arg_value
+            meta_arg_info['mtime'] = os.stat(cur_arg_value).st_mtime
+            meta_args.append(meta_arg_info)
+
+        cache_meta_path = os.path.join(chewer.context.objdir,
+                                       'stap_cache_meta.json')
+        
+        f = open(cache_meta_path, 'w')
+        # do a (mortal) human readable dump
+        json.dump(meta, f, indent=2)
+        f.close()
+        
+        
+
     def build_module(self, chewer):
         '''
         Run 'stap' telling it to build a module for insertion by staprun, but
         do not run the module at this time.
+
+        On success update the cache stash in the object directory that will
+        tell us where to find the module on our next run and how to validate
+        that it is still up-to-date.
         '''
         stap_args = [os.path.join(STAP_BIN_DIR, 'stap'),
                      '-p4']
@@ -551,6 +655,10 @@ class SystemtapDriverThing(object):
         # the library paths
         stap_args.extend(chewer.arg_values)
 
+        print ''
+        print '!!! Invoking:', repr(stap_args)
+        print ''
+
         # give it a pipe for standard input so it keeps its mitts off our
         #  control-c.
         # give it a pipe for stdout so we can read the location of where the
@@ -564,117 +672,214 @@ class SystemtapDriverThing(object):
                                 stderr=subprocess.PIPE)
         stdout_data, stderr_data = pope.communicate()
         
-        
+        print '====\nSTDOUT:'
+        print stdout_data
+        print '====\nSTDERR:'
+        print stderr_data
 
-    def run(self):
+        if pope.returncode != 0:
+            raise Exception('Failure building module')
+
+        self.probe_module_path = None
+        for line in stdout_data.splitlines():
+            if line.startswith('/') and line.endswith('.ko'):
+                self.probe_module_path = line
+                break
+        if self.probe_module_path is None:
+            raise Exception('Somehow failed to get the module path?')
+
+        self._write_module_cache(chewer)
+
+
+    def go(self):
+        '''
+        This is the driver function which parses the command line and decides
+        what activities need to occur based on the requested mode and the
+        state of cached things.
+
+        Major modes:
+        - build: Chew the script, use stap to build the kernel module if needed.
+        - run: Everything that build suggests plus activating the probes via
+           staprun and then either forking off a child process or attaching to
+           an existing process.  Trigger a post-processing script afterwards
+           if configured.
+        - process: Just re-run the processing script assuming we are told the
+           right output directory.
+        '''
         print '!!!', os.getpid(), 'ARGS YOU GAVE ME:', repr(sys.argv)
 
         parser = self._build_parser()
         options, args = parser.parse_args()
 
-        dorunrun = True
 
+        # -- Parser inferences...
+        if options.rerunpath:
+            options.mode = 'process'
+        self.mode = options.mode
+
+        # -- Translate modes to actions
+        if self.mode == 'build':
+            self.doBuild = True
+            self.doRun = self.doProcess = False
+        elif self.mode == 'run':
+            self.doBuild = self.doRun = self.doProcess = True
+        elif self.mode == 'process':
+            self.doProcess = True
+            self.doBuild = self.doRun = False
+        else:
+            raise Exception('Bad mode: ' + self.mode)
+
+        # we need to know the input script and executable (or pid) for everyone
         if len(args) < 2:
             parser.print_usage()
             return 1
 
-        tapscript = args[0]
+        
+        # -- Build Context
+        self.build_context(options, args)
 
-        attachMode = args[1].isdigit()
+        # -- Chew
+        chewer = self.process_script(options, args)
+
+        # -- Build
+        # (This will cache/reuse cache when possible.)
+        if self.doBuild:
+            if not self.can_reuse_module(chewer):
+                self.build_module(chewer)
+            
+        # -- Run
+        if self.doRun:
+            self.run(chewer)
+
+        # -- Process
+        if self.doProcess:
+            self.post_process(chewer, pid)
+        return 0
+
+
+    def build_context(self, options, args):
+        # - Figure out attach versus spawn
         # if the second argument is a number then it must be the PID
-        if attachMode:
-            naming_pid = pid = int(args[1])
+        if self.doRun and args[1].isdigit():
+            self.runMode = 'attach'
+
+            self.run_naming_pid = self.run_pid = int(args[1])
 
             # use thie pid to get the binary and from that the objdir
-            proc_dir = '/proc/%d' % (pid,)
-            exe_path = os.path.realpath(os.path.join(proc_dir, 'exe'))
+            self.proc_dir = '/proc/%d' % (self.run_pid,)
+            exe_path = os.path.realpath(os.path.join(self.proc_dir, 'exe'))
 
         # otherwise it is the path to the executable
         else:
+            # (we may not actually be in a run mode, but the semantics are
+            #  that of spawn mode)
+            self.runMode = 'spawn'
+
             # use our invocation's process number as the naming pid...
-            naming_pid = os.getpid()
+            self.run_naming_pid = os.getpid()
             # Indicate we don't have a pid; this completely prevents us
             #  from performing _any_ address translations for the time
             #  being.  Eventually we could perhaps have probes that
             #  handle the mapping events on the fly (from the log...)
-            pid = None
+            self.run_pid = None
             exe_path = args[1]
 
         # systemtap === linux
         pathparts = exe_path.split('/')
 
         objdir = self._figure_out_objdir(pathparts)
-        
-        # put our built script in the objdir...
-        built_tapscript = os.path.join(objdir, os.path.basename(tapscript))
 
-        # -- BUILD the tapscript
-        context = self._make_context(objdir)
+        context = self.context = self._make_context(objdir)
         context.output_base_dir = options.output_base_dir
+        context.exe_path = exe_path
+        context.mode = self.mode
 
         if options.rerunpath:
             trace_dir = context.output_dir = options.rerunpath
             dorunrun = False
         else:
             # provide a reasonable default for the directory
+            # (the chewer may clobber this)
             trace_dir = os.path.join(options.output_base_dir,
-                                     'chewtap-%d' % (naming_pid,))
+                                     'chewtap-%d' % (self.run_naming_pid,))
             if os.path.exists(trace_dir):
                 trace_dir += '-%d' % (int(time.time()),)
             context.output_dir = trace_dir
         
         context.cmd_args = args[1:]
-        chewer = ScriptChewer(context, exe_path)
+
+
+    def process_script(self, options, args):
+        # put our built script in the objdir...
+        tapscript = args[0]
+        built_tapscript = os.path.join(self.context.objdir,
+                                       os.path.basename(tapscript))
+
+        chewer = self.chewer = ScriptChewer(self.context)
         chewer.chew_script(tapscript)
-        # Avoid touching the output file in rerun mode (although we do need
-        #  to process it for side-effects)
-        if dorunrun:
+
+        # build and run require updating the script (if required)
+        if self.mode != 'process':
             chewer.maybe_write_script(built_tapscript)
-            trace_dir = context.output_dir
-            if not os.path.exists(trace_dir):
-                os.makedirs(trace_dir)
+            if not os.path.exists(self.context.output_dir):
+                os.makedirs(self.context.output_dir)
+
+        return chewer
+
+
+    def _attach_pre_run_legwork(self):
+        '''
+        Steal any information from the /proc/PID directory that we need
+        just prior to the run.  This wants to happen after the chewing of the
+        script so that any conclusions like the output directory are already
+        known.
+        
+        Currently we need:
+        - the maps file that tells us about the memory map
+        '''
+        shutil.copyfile(os.path.join(self.proc_dir, 'maps'),
+                        os.path.join(self.context.output_dir, 'maps'))
+
+    def run(self, chewer):
+        '''
+        Handle either spawning a child process or attaching to an existing
+        process while (either way) spinning up an staprun instance.
+        '''
+
+        if self.runMode == 'attach':
+            self._attach_pre_run_legwork()
 
         # -- FORK if running and not in attached mode
+        if self.runMode == 'spawn':
+            # clean out our pipes prior to forking!
+            sys.stdout.flush()
+            sys.stderr.flush()
 
-        if dorunrun:
-            if not attachMode:
-                # clean out our pipes prior to forking!
+            kid_read_pipe, parent_write_pipe = os.pipe()
+            naming_pid = kid_pid = pid = os.fork()
+
+            if kid_pid == 0:
+                # I am the child!  wait for our parent to tell us it's cool
+                #  to invoke the thinger.
+                while True:
+                    b = os.read(kid_read_pipe, 1)
+                    if b == 'x':
+                        break
+                    time.sleep(0.05)
+
+                sys.stdout.write('@@@ read my 1 byte! execing other thing!\n')
                 sys.stdout.flush()
-                sys.stderr.flush()
+                os.execv(args[1], args[1:])
+                # THE PROCESS IS REPLACED BY THE ABOVE, NOTHING MORE EVER
+                #  HAPPENS!
+            # (I am the parent process if I am here)
 
-                kid_read_pipe, parent_write_pipe = os.pipe()
-                naming_pid = kid_pid = pid = os.fork()
-                
-                if kid_pid == 0:
-                    # I am the child!  wait for our parent to tell us it's cool
-                    #  to invoke the thinger.
-                    while True:
-                        b = os.read(kid_read_pipe, 1)
-                        if b == 'x':
-                            break
-                        time.sleep(0.05)
+            print '!!! forked off child', kid_pid
+        else:
+            naming_pid = self.run_naming_pid
+            pid = self.run_pid
+            kid_pid = None
 
-                    sys.stdout.write('@@@ read my 1 byte! execing other thing!\n')
-                    sys.stdout.flush()
-                    os.execv(args[1], args[1:])
-                    # THE PROCESS IS REPLACED BY THE ABOVE, NOTHING MORE EVER
-                    #  HAPPENS!
-                # (I am the parent process if I am here)
-
-                print '!!! forked off child', kid_pid
-            else:
-                kid_pid = None
-
-
-        # -- FETCH required data about the running process.
-        # we need a temporary directory to hold our data for this invocation
-        if dorunrun:
-            # we need the proc maps files to convert pointers
-            if attachMode:
-                shutil.copyfile(os.path.join(proc_dir, 'maps'),
-                                os.path.join(trace_dir, 'maps'))
-        
-        
         # -- RUN systemtap
         # - build args
         # assume the user is in the stapdev group
@@ -700,6 +905,9 @@ class SystemtapDriverThing(object):
             #  so we're doing it ourself.  We really want to constrain the
             #  stap invocation to the right process, so we fork so we can know
             #  the child pid before execing.  
+
+            # we need a -v so we can know when it has gone active.
+            stap_args.append('-v')
 
             # - spin up
             stap_args.extend(['-x', '%d' % (pid,)])
@@ -807,13 +1015,19 @@ class SystemtapDriverThing(object):
                 if kid_pid:
                     os.kill(kid_pid, 9)
 
-        # -- POST PROCESS
+    def post_process(self, chewer, pid):
         if chewer.postprocess_script:
+            trace_dir = chewer.context.output_dir
             # provide it with the address sym filter; assuming required.
-            procinfo = addrsymfilt.ProcInfo(pid, os.path.join(trace_dir, 'maps'))
+            procinfo = addrsymfilt.ProcInfo(pid,
+                                            os.path.join(trace_dir, 'maps'))
 
-            search_path = [os.path.dirname(os.path.abspath(tapscript))]
+            # first look in the directory the input .stp file came from
+            search_path = [
+                os.path.dirname(os.path.abspath(chewer.input_script_path))]
+            # then check the python path
             search_path.extend(sys.path)
+
             fp, modpath, desc = imp.find_module(chewer.postprocess_script,
                                                 search_path)
             module = None
@@ -828,8 +1042,6 @@ class SystemtapDriverThing(object):
                 bulkproc = BulkProcessor(trace_dir)
                 modproc = module.Processor()
                 modproc.process(trace_dir, bulkproc, procinfo)
-        
-        return 0
 
 class MozMain(SystemtapDriverThing):
     def _figure_out_objdir(self, pathparts):
@@ -848,4 +1060,4 @@ class MozMain(SystemtapDriverThing):
 if __name__ == '__main__':
     # change to the directory of the script if specified absolutely...
     m = MozMain()
-    sys.exit(m.run())
+    sys.exit(m.go())
