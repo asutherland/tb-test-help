@@ -53,17 +53,61 @@ var wy = exports.wy =
   new wmsy.WmsyDomain({id: "ui-vis-chainlinks", domain: "mozperfish",
                        clickToFocus: true});
 
+/**
+ * Visualization that can be parameterized on:
+ * - time base: wall clock vs. global sequence
+ * - major grouping: thread vs. causal family
+ */
 wy.defineWidget({
   name: "vis-chainlinks",
   constraint: {
     type: "vis-chainlinks",
   },
+  emit: ["clickedEvent"],
   structure: {
+    kanvaz: {}, // so named to avoid confusion about whether it's a canvas. no!
+
   },
   impl: {
+    /**
+     * Meta-data about the visualization's configurable aspects for exposure
+     *  for manipulation via wmsy UI.  Since this is about the widget binding
+     *  it goes on the widget binding.  Madness, no?
+     */
+    parameters: [
+      {
+        name: "timebase",
+        label: "Time Base",
+        values: [
+          {
+            label: "Wall Clock",
+            value: "wall",
+          },
+          {
+            label: "Global Sequence",
+            value: "gseq",
+          },
+        ],
+      },
+      {
+        name: "majorgroup",
+        label: "Group By",
+        values: [
+          {
+            label: "Thread",
+            value: "thread",
+          },
+          {
+            label: "Causal Family",
+            value: "family",
+          },
+        ],
+      },
+    ],
     preInit: function() {
       var chainer = this.obj;
-      
+      var self = this;
+
       var nodes = [];
       var links = [];
 
@@ -91,7 +135,7 @@ wy.defineWidget({
       var vis = new pv.Panel()
         .width(WIDTH)
         .height(HEIGHT)
-        .canvas(this.domNode)
+        .canvas(this.kanvaz_element)
         .margin(4)
         .fillStyle("white");
         //.event("mousedown", pv.Behavior.pan());
@@ -108,6 +152,7 @@ wy.defineWidget({
         .eventFromNode(function(n) { return n ? n.event : n; })
         //.time(function(d) { return d ? d.gseq : d; })
         .time(function(d) { return d ? d.time : d; })
+        //.duration(function(e) { return 1; })
         .duration(function (e) { return e.duration; })
         .group(function(d) { return d ? d.thread_idx : -1; })
         .kind(function(d) { return d.semEvent ? d.semEvent.type : -1; });
@@ -222,7 +267,7 @@ wy.defineWidget({
                        return 12;
                      return 6;
                    })
-        .fillStyle(function(d) { 
+        .fillStyle(function(d) {
                      switch (d.mark) {
                        case MARK_ANCESTOR:
                          return ancestorColor;
@@ -234,7 +279,7 @@ wy.defineWidget({
                          return colors(d.semEvent ? d.semEvent.type : 0);
                      }
                    })
-        .strokeStyle(function(d) { 
+        .strokeStyle(function(d) {
                      if (d.primary)
                        return primaryLinkColor;
                      switch (d.mark) {
@@ -250,11 +295,14 @@ wy.defineWidget({
         .title(function(d) { return d.event ? d.event.gseq : 0; })
         //.event("mousedown", pv.Behavior.drag())
         .event("mouseover", selectifyNode)
-        .event("click", function(d) { console.log("clicked on", d); });
+        .event("click", function(n) {
+                 self.emit_clickedEvent(n.event);
+                 console.log("clicked on", n);
+               });
         //.event("drag", graph);
 
 
-      vis.render();  
+      vis.render();
     },
   }
 });

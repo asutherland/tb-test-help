@@ -954,6 +954,113 @@ probe process(@@lib:bin/libxul.so).function("nsInputStreamPump::OnInputStreamRea
 
 
 ////////////////////////////////////////////////////////////////////////////////
+//////// Sockets!
+
+/*
+ * There's an nsSocketTransportService that has its own thread and does the
+ *  whole inverted event loop thing to mix-in all the required polling.
+ * The socket service is made aware of sockets via calls to AttachSocket and
+ *  told to fuggedaboutit via DetachSocket.  In between it invokes OnSocketReady
+ *  on the nsASocketHandler associated on attach when it polls and has something
+ *  to say or a timeout occurred.  (And it calls OnSocketDetached on detach.)
+ *
+ * Actual read/write (read: non-listening) sockets appear to use
+ *  nsSocketTransport instances.  These provide input and output streams which
+ *  (generally) interpose a pipe to buffer and shuttle bytes across the thread
+ *  boundaries.  NS_NewPipe2 (nsPipe3.cpp) creates the pipes (nsPipeInputStream/
+ *  nsPipeOutputStream), NS_AsyncCopy (nsStreamUtils.cpp) creates the copiers
+ *  (nsStreamCopierIB/nsStreamCopierOB).
+ *
+ * This creates nested call stacks for inbound data on the socket thread like:
+ * - nsSocketTransportService::DoPollIteration
+ * - nsSocketTransport::OnSocketReady calls
+ * - nsSocketInputStream::OnSocketReady calls
+ * - nsAStreamCopier::OnInputStreamReady calls
+ * - nsAStreamCopier::PostContinuationEvent[_Locked] calls
+ * - nsSocketTransportService::Dispatch
+ *
+ * Which then shows up on the same thread to propagate to the main thread...
+ * - nsAStreamCopier::Run calls Process calls
+ * - nsStreamCopierOB:DoCopy calls
+ * - nsPipeOutputStream::WriteSegments calls
+ * - nsPipe::AdvanceWriteCursor calls
+ * - nsPipeEvents::~nsPipeEvents ??
+ * - nsInputStreamReadyEvent:OnInputStreamReady
+ * - nsThread::Dispatch
+ *
+ * Which then shows up as an input ready event on the main thread which should
+ *  directly call into the listener via XPCOM.
+ *
+ * The point is that there is actually a lot of boring activity that will show 
+ *  up in causal traces that we want to be able to elide but this requires
+ *  either to just willfully ignore some stuff and assume that we have enough
+ *  coverage to make up for it, or add more explicit probes that make sure we
+ *  can always chain across the call-stacks correctly.  We opt for the latter.
+ *
+ * Thus, for inbound data we track the origination in nsSocketTransport with a
+ *  container event which lets us see through to the resulting dispatch call.
+ *  When that event gets run we therefore know its name and can tie that to
+ *  the nsInputStreamReady re-dispatching which we can tie through to the
+ *  explicit nsInputStreamReadyEvent::Run probe we have above.
+ * We first learn the names of events by observing 
+ *
+ */
+
+////////////////////////////////////////////////////////////////////////////////
+//// Socket Transport Ready : 0x1030
+
+//@@file:mozilla/netwerk/base/src/nsSocketTransport2.cpp
+//@@method:nsSocketTransport::OnSocketReady
+//@@lineseek:nsSocketTransport::OnSocketReady(PRFileDesc *fd, PRInt16 outFlags)
+//@@lineseek:if (outFlags == -1) {
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
+  track_enter(0x1030, sprintf("\"fd\":%d", $fd));
+}
+
+probe process(@@lib:bin/libxul.so).function("nsSocketTransport::OnSocketReady").return {
+  track_leave(0x1030, "");
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//// Socket Attach : 0x1031
+
+//@@file:mozilla/netwerk/base/src/nsSocketTransportService2.cpp
+//@@method:nsSocketTransportService::AttachSocket
+//@@lineseek:nsSocketTransportService::AttachSocket(PRFileDesc *fd, nsASocketHandler *handler)
+//@@lineseek:SocketContext sock;
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
+  now = gettimeofday_ns();
+  ctx = tid();
+  depth = t_depth[ctx];
+  seq = gseq++;
+
+  singleShot = ($aType == 0);
+  printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":4145,\"time\":%d,\"data\":{\"fd\":%d}}\n",
+         ctx, seq, depth,
+         now - dawn_of_time, $fd);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//// Socket Detach : 0x1032
+
+//@@file:mozilla/netwerk/base/src/nsSocketTransportService2.cpp
+//@@method:nsSocketTransportService::DetachSocket
+//@@lineseek:nsSocketTransportService::DetachSocket(SocketContext *sock)
+//@@lineseek:sock->mHandler->OnSocketDetached(sock->mFD);
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
+  now = gettimeofday_ns();
+  ctx = tid();
+  depth = t_depth[ctx];
+  seq = gseq++;
+
+  singleShot = ($aType == 0);
+  printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":4146,\"time\":%d,\"data\":{\"fd\":%d}}\n",
+         ctx, seq, depth,
+         now - dawn_of_time, $sock->mFD);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
 //// XPConnect -> JS Crossing : 0x1040
 
 /** maps [thread] to current thread depth... */
@@ -1008,8 +1115,14 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
 
 //@@file:mozilla/js/src/jsapi.cpp
 //@@method:JS_ExecuteScript
+//@@lineseek:JS_ExecuteScript(JSContext *cx, JSObject *obj, JSScript *script, jsval *rval)
 //@@lineseek:ok = Execute(cx, obj, script, NULL, 0, Valueify(rval));
-probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref),
+//@@file:mozilla/js/src/jsapi.cpp
+//@@method:JS_EvaluateUCScriptForPrincipals
+//@@lineseek:JS_EvaluateUCScriptForPrincipals(JSContext *cx, JSObject *obj,
+//@@lineseek:ok = Execute(cx, obj, script, NULL, 0, Valueify(rval));
+process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   track_enter(0x1041, "");
 
   ctx = tid();
@@ -1019,9 +1132,16 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
 
 //@@file:mozilla/js/src/jsapi.cpp
 //@@method:JS_ExecuteScript
+//@@lineseek:JS_ExecuteScript(JSContext *cx, JSObject *obj, JSScript *script, jsval *rval)
 //@@lineseek:ok = Execute(cx, obj, script, NULL, 0, Valueify(rval));
 //@@lineseek:return ok;
-probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref),
+//@@file:mozilla/js/src/jsapi.cpp
+//@@method:JS_EvaluateUCScriptForPrincipals
+//@@lineseek:JS_EvaluateUCScriptForPrincipals(JSContext *cx, JSObject *obj,
+//@@lineseek:ok = Execute(cx, obj, script, NULL, 0, Valueify(rval));
+//@@lineseek:return ok;
+process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   track_leave(0x1041, script_info_from_jsscript($script));
 
   ctx = tid()

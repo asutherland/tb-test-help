@@ -37,7 +37,8 @@
 
 /**
  * UI chrome bits, but we can't call it chrome because everything is called
- *  chrome these days.
+ *  chrome these days.  Most of this stuff will ideally be able to move into
+ *  the wmsy widget library.
  **/
 
 require.def("mozperfsh/ui-scaffolding",

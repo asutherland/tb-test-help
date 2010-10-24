@@ -90,11 +90,17 @@ class BinaryInfo(object):
             if symname.startswith('non-virtual thunk to '):
                 symname = 'thunk:' + symname[21:]
 
-            idxParen = symname.find('(')
-            if idxParen >= 0:
-                if symname[idxParen+1] != ')':
-                    ridxParen = symname.find(')', idxParen+1)
-                    symname = symname[:idxParen+1] + '...' + symname[ridxParen:]
+            # - Special (non-)transformations...
+            if (symname.startswith('nsRunnableMethod') or
+                symname.startswith('vtable for nsRunnableMethod')):
+                pass
+            # - Otherwise clean up ranty big parts
+            else:
+                idxParen = symname.find('(')
+                if idxParen >= 0:
+                    if symname[idxParen+1] != ')':
+                        ridxParen = symname.find(')', idxParen+1)
+                        symname = symname[:idxParen+1] + '...' + symname[ridxParen:]
 
             lastaddr = addr
             self.symbols.append((addr, symname, rawname))

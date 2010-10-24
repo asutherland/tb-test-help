@@ -69,6 +69,7 @@ var EV_LOG_MESSAGE = 11;
 var EV_GC = 17;
 var EV_ELOOP_EXECUTE = 4096, EV_ELOOP_SCHEDULE = 4097;
 var EV_INPUT_READY = 4128, EV_INPUT_PUMP = 4129;
+var EV_SOCK_READY = 4144, EV_SOCK_ATTACH = 4145, EV_SOCK_DETACH = 4146;
 var EV_XPCJS_CROSS = 4160, EV_JSEXEC_CROSS = 4161;
 var EV_PROXY_CALL = 4192;
 var EV_LATENCY = 8192;
@@ -191,7 +192,25 @@ function CausalChainer(perfishBlob, logProcessor) {
    * ]
    */
   this.pendingEvents = {};
+  /**
+   * @dictof[
+   *   @key["timer id"]
+   *   @value[ChainLink]
+   * ]
+   */
   this.pendingTimers = {};
+  /**
+   * Sockets provide an inherently sequential ordering of their links.  As such
+   *  every time we see a new socket ready event we update the link associated
+   *  with the fd to be that new link.  (And in the base case we set the link
+   *  to the link active when the attach was processed.)
+   *
+   * @dictof[
+   *   @key["socket fd"]
+   *   @value[ChainLink]
+   * ]
+   */
+  this.pendingSockets = {};
 }
 CausalChainer.prototype = {
   /**
@@ -233,9 +252,16 @@ CausalChainer.prototype = {
       var thread_events = threads[iThread].levents;
       // Mark the last event as boring if it's a thread-shutdown event post
       //  so that we can just ignore it.  (It's boring.)
+      // XXX this heuristic is proving annoying so I am disabling it.  It is
+      //  seems to be marking a nsHostResolver thread's legitimate activities
+      //  as boring because the thread never seems to shutdown according to
+      //  our probes.  (And the event is a single 4097.)  If we end up being
+      //  more aware of nsHostResolver, we could likely moot this.
+      /*
       if (thread_events.length &&
           thread_events[thread_events.length - 1].type == EV_ELOOP_SCHEDULE)
         thread_events[thread_events.length - 1].boring = true;
+      */
 
       eventLists.push(thread_events);
       eventOffsets.push(0);
@@ -259,41 +285,18 @@ CausalChainer.prototype = {
       return min_event;
     }
 
-    // -- processing loop
+    // --- processing loop
     var event, semEvent, link, thread_link, parent_link, death = 0, links;
     while ((event = get_next_event())) {
       // save off the thread index; if we unbox we may lose access to the info
       //  because we only poke it back into top-level events.
       var thread_idx = event.thread_idx;
 
-      // if this isn't an event loop thing, then the event belongs to the
-      //  containing thread's causal chain which we may need to create...
-      if (event.type !== EV_ELOOP_EXECUTE) {
-        // do not generate (synthetic) chains for:
-        // - boring events
-        // - events that will generate a zing
-        if ((("boring" in event) && event.boring) ||
-            (event.type === EV_GC || event.type === EV_LATENCY)) {
-          this._walk_events(event, null);
-          continue;
-        }
-        if (thread_roots[event.thread_idx] === null) {
-          thread_link = thread_roots[event.thread_idx] = new ChainLink(null);
-          self.rootLinks.push(thread_link);
-        }
-        else {
-          thread_link = thread_roots[event.thread_idx];
-        }
-        link = new ChainLink(event);
-        thread_link.outlinks.push(link);
-        link.inlinks.push(thread_link);
-        this._walk_events(event, link);
-      }
-      // - event allocation
+      // -- Event Loop Execution
       // (we know this must be an event loop execution, but we can potentially
       //  unwrap it based on how it got tunneled over; for example timer
       //  invocation or asynchronous callback, etc.)
-      else {
+      if (event.type === EV_ELOOP_EXECUTE) {
         if (event.data.threadId in self.pendingEvents &&
             event.data.eventId in self.pendingEvents[event.data.threadId]) {
           links = self.pendingEvents[event.data.threadId][event.data.eventId];
@@ -302,8 +305,10 @@ CausalChainer.prototype = {
             delete self.pendingEvents[event.data.threadId][event.data.eventId];
           // null links tell us that it was a boring event and we should forget
           //  this guy.
-          if (parent_link === null)
+          if (parent_link === null) {
+            console.log("skipping boring event", event.gseq);
             continue;
+          }
         }
         else {
           // non-events are fine
@@ -377,6 +382,58 @@ CausalChainer.prototype = {
         }
 
         this._walk_events(event, link);
+        continue;
+      }
+      // -- Socket Loop
+      // Note that socket stuff only happens on the socket thread and cannot
+      //  have any XPConnect stuff happening, which makes the actions that
+      //  happen here directly uninteresting, but necessary to know about
+      //  because this is where all the I/O stuff happens.
+      else if (event.type === EV_SOCK_READY) {
+        if (event.data.fd in this.pendingSockets) {
+          // get our progenitor link
+          parent_link = this.pendingSockets[event.data.fd];
+
+          // create a new link for the current dude
+          link = new ChainLink(event);
+          parent_link.outlinks.push(link);
+          link.inlinks.push(parent_link);
+
+          // put that link in the pending sockets map because sockets are
+          //  inherently sequential
+          this.pendingSockets[event.data.fd] = link;
+
+          this._walk_events(event, link);
+          continue;
+        }
+        else {
+          console.warn("unknown socket ready fd", event.data.fd, event);
+          // fall-through!
+        }
+      }
+      // -- Program logic outside an event loop.
+      // if this isn't an event loop thing, then the event belongs to the
+      //  containing thread's causal chain which we may need to create...
+      {
+        // do not generate (synthetic) chains for:
+        // - boring events
+        // - events that will generate a zing
+        if ((("boring" in event) && event.boring) ||
+            (event.type === EV_GC || event.type === EV_LATENCY)) {
+          this._walk_events(event, null);
+          continue;
+        }
+        if (thread_roots[event.thread_idx] === null) {
+          thread_link = thread_roots[event.thread_idx] = new ChainLink(null);
+          self.rootLinks.push(thread_link);
+        }
+        else {
+          thread_link = thread_roots[event.thread_idx];
+        }
+        link = new ChainLink(event);
+        thread_link.outlinks.push(link);
+        link.inlinks.push(thread_link);
+        this._walk_events(event, link);
       }
     }
   },
@@ -410,6 +467,14 @@ CausalChainer.prototype = {
     // -- cancellation
     else if (event.type === EV_TIMER_CLEARED) {
       delete this.pendingTimers[event.data.timerId];
+    }
+    // -- socket delta action!
+    else if (event.type === EV_SOCK_ATTACH) {
+      console.log("attach sock", event.data.fd, event);
+      this.pendingSockets[event.data.fd] = link;
+    }
+    else if (event.type === EV_SOCK_DETACH) {
+      delete this.pendingSockets[event.data.fd];
     }
     // -- log message; can create new synthetic link!!
     else if (event.type === EV_LOG_MESSAGE) {

@@ -54,8 +54,10 @@ class ProcContext(object):
         f.close()
 
 EV_EVENT_LOOP = 0x1000
+# socket ready events happen as part of a (nested) event loop
+EV_SOCK_READY = 0x1030
 
-REPARENTING_EVENTS = set([EV_EVENT_LOOP])
+REPARENTING_EVENTS = set([EV_EVENT_LOOP, EV_SOCK_READY])
 
 class ThreadProc(object):
     '''

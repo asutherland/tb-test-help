@@ -90,4 +90,72 @@ wy.defineWidget({
   },
 });
 
+var EV_ELOOP_EXECUTE = 4096, EV_ELOOP_SCHEDULE = 4097;
+
+var eventNameMap = wy.defineLocalizedMap("event names", {
+  5: "Timer Installed",
+  6: "Timer Cleared",
+  7: "Timer Fired",
+  11: "Log Message",
+  17: "Garbage Collection",
+  4096: "Runnable Executed",
+  4097: "Runnable Scheduled",
+  4128: "Input Ready",
+  4129: "Input Pump",
+  4144: "Socket Transport Ready",
+  4145: "Socket Transport Attached",
+  4146: "Socket Transport Detached",
+  4160: "XPConnect calling JS",
+  4161: "Native calling JS",
+  4192: "Proxied Call",
+  8192: "Latency Notification",
+}, "Unknown Event: #0");
+
+wy.defineWidget({
+  name: "event-tab",
+  constraint: {
+    type: "tab",
+    obj: { kind: "event" },
+  },
+  structure: {
+    event: wy.widget({type: "event"}, "event"),
+  }
+});
+
+wy.defineWidget({
+  name: "event-generic",
+  doc: "generic event dump fallback",
+  constraint: {
+    type: "event",
+    obj: { type: wy.WILD },
+  },
+  structure: {
+    eventType: "",
+  },
+  impl: {
+    postInit: function() {
+      this.eventType_element.textContent = eventNameMap.lookup(this.obj.type);
+    }
+  },
+});
+
+wy.defineWidget({
+  name: "event-eloop-execute",
+  doc: "event loop execution of a native, just show the native info",
+  constraint: {
+    type: "event",
+    obj: { type: EV_ELOOP_EXECUTE },
+  },
+  structure: {
+    header: ["event loop: ", wy.bind(["data", "scriptName"])],
+    kids: wy.vertList({type: "event"}, "children"),
+  },
+  style: {
+    // this is the script name... perhaps we should switch to named?
+    header1: [
+      "color: #607080;",
+    ],
+  },
+});
+
 }); // end require.def

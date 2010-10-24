@@ -73,15 +73,25 @@ wy.defineWidget({
     type: "top-level",
   },
   provideContext: {zing_blamer: "zing_blamer"},
+  emit: ["openTab"],
   structure: {
     vis: wy.widget({type: "vis-chainlinks"}, "chainer"),
     tabs: wy.widget({type: "tabbox"}, wy.SELF),
-  }
+  },
+  receive: {
+    clickedEvent: function(event) {
+      this.emit_openTab({
+        name: event.gseq.toString(),
+        kind: "event",
+        event: event,
+      }, true);
+    },
+  },
 });
 
 exports.chewAndShow = function(perfData) {
   console.log("perf data", perfData);
-  
+
   var chainer = new mod_chainer.CausalChainer(perfData,
                                               mod_logtesty.chewXpcshellDumps);
   chainer.chain();
@@ -89,7 +99,7 @@ exports.chewAndShow = function(perfData) {
 
   var zing_blamer = new mod_zing_blamer.ZingBlamer(chainer);
   zing_blamer.summarize();
-  
+
   var rootObj = {
     chainer: chainer,
     zing_blamer: zing_blamer,
@@ -99,7 +109,7 @@ exports.chewAndShow = function(perfData) {
       {kind: "about", name: "About"},
     ],
   };
-  
+
   var binder = wy.wrapElement(document.getElementById("body"));
   binder.bind({type: "top-level", obj: rootObj});
 };
