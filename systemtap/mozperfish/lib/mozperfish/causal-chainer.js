@@ -481,7 +481,6 @@ CausalChainer.prototype = {
     }
     // -- socket delta action!
     else if (event.type === EV_SOCK_ATTACH) {
-      console.log("attach sock", event.data.fd, event);
       this.pendingSockets[event.data.fd] = link;
     }
     else if (event.type === EV_SOCK_DETACH) {

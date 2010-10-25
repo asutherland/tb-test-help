@@ -40,7 +40,7 @@
  *  that I actually expect this to involve into something anyone else wants
  *  to use, but why preclude it?  (Obviously the require.def wrapping would
  *  need to come off, of course...)
- * 
+ *
  * This is being written based off the idioms of the force-directed layout
  *  code.
  **/
@@ -53,7 +53,7 @@ require.def("mozperfish/pv-layout-timey", [], function() {
 pv.Layout.Timey = function() {
   pv.Layout.Network.call(this);
   var that = this;
-  
+
   (this.phase = new pv.Mark()
       .data(function() { return that.phases(); })
       .left(function (n) { return n.x; })
@@ -61,7 +61,7 @@ pv.Layout.Timey = function() {
       .width(function (n) { return n.dx; })
       .height(function (n) { return n.dy; })
       ).parent = this;
-  
+
   (this.context = new pv.Mark()
       .data(function() { return that.flattened_contexts; })
       .left(function (n) { return n.x; })
@@ -121,7 +121,7 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
   // superclass returns true if we've already built ourselves.
   if (pv.Layout.Network.prototype.buildImplied.call(this, s))
     return;
-  
+
   var nodes = s.nodes, links = s.links, phases = s.phases,
       contexts = s.contexts, contextIndent = s.contextIndent,
       zings = s.zings,
@@ -131,11 +131,11 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
       kindAccessor = this._kind,
       l_margin = s.phaseLabelMargin,
       w = s.width, h = s.height, i;
-  
+
   function nodeTimeAccessor(d) {
     return timeAccessor(eventFromNode(d));
   }
-  
+
   var timeScale = pv.Scale.linear()
                       .domain(nodes, nodeTimeAccessor, nodeTimeAccessor)
                       .range(0, h);
@@ -146,9 +146,9 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
                         .domain(nodes, nodeGroupAccessor)
                         .split(l_margin, w);
 
-  console.log("timeScale", timeScale.domain(), timeScale.range(),
-              "groupScale", groupScale.domain(), groupScale.range());
-  
+  //console.log("timeScale", timeScale.domain(), timeScale.range(),
+  //            "groupScale", groupScale.domain(), groupScale.range());
+
   var groupRange = groupScale.range(), groupBase;
   var groupSpan = groupRange[1] - groupRange[0];
   var groupRightOffset = groupSpan/2, groupLeftOffset = -groupSpan/2;
@@ -156,10 +156,10 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
   var eventDisplace = pv.Scale.ordinal()
                           .domain(nodes, kindAccessor)
                           .split(groupRightOffset - 60, groupRightOffset);
-  
-  console.log("groupSpan", groupSpan,
-       "eventDisplace", eventDisplace.domain(), eventDisplace.range());
-  
+
+  //console.log("groupSpan", groupSpan,
+  //     "eventDisplace", eventDisplace.domain(), eventDisplace.range());
+
   var e;
   // nodes
   for (i = 0; i < nodes.length; i++) {
@@ -168,7 +168,7 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
     n.x = groupScale(groupAccessor(e)) + eventDisplace(kindAccessor(n));
     n.y = timeScale(timeAccessor(e));
   }
-  
+
   // phases
   for (i = 0; i < phases.length; i++) {
     var p = phases[i];
@@ -180,7 +180,7 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
     else
       p.dy = timeScale(timeAccessor(p.end)) - p.y;
   }
-  
+
   // zings
   for (i = 0; i < zings.length; i++) {
     var z = zings[i];
@@ -194,7 +194,7 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
     if (z.dy < 1)
       z.dy = 1;
   }
-  
+
   // contexts
   var flattened_contexts = this.flattened_contexts = [];
   function recurseContext(c, l, r) {
@@ -202,13 +202,13 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
     c.dx = r - l;
     c.y = timeScale(timeAccessor(c.start));
     c.dy = c.safe_dy = timeScale(timeAccessor(c.end)) - c.y;
-    
+
     flattened_contexts.push(c);
-    
+
     var nl = l + contextIndent;
     if (nl > r)
       return;
-    
+
     // 'i' is safe in here if var'd, but hey...
     for (var j = 0; j < c.children.length; j++) {
       if (!j) {
@@ -216,7 +216,7 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
         //  has before its child box will show up...
         c.safe_dy = timeScale(timeAccessor(c.children[j].start)) - c.y;
       }
-      
+
       recurseContext(c.children[j], nl, r);
     }
   }
@@ -228,7 +228,7 @@ pv.Layout.Timey.prototype.buildImplied = function(s) {
                    groupBase + groupLeftOffset,
                    groupBase + groupRightOffset);
   }
-  
+
 };
 
 }); // end require.def
