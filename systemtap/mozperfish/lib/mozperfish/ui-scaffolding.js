@@ -167,11 +167,12 @@ wy.defineWidget({
     'panels-item': {
       _: [
         "display: none;",
+        "padding: 2px;",
       ],
       '[selected="true"]': [
         "display: block;",
       ],
-    }
+    },
   },
 });
 

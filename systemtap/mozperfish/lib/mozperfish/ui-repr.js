@@ -90,6 +90,73 @@ wy.defineWidget({
   },
 });
 
+wy.defineWidget({
+  name: "JSStack",
+  constraint: {
+    type: "JSStack",
+  },
+  structure: {
+    header: "JS Stack:",
+    frames: wy.vertList({type: "JSStackFrame"}, wy.SELF),
+  },
+  style: {
+    frames: [
+      "margin-left: 1em;",
+    ],
+  }
+});
+
+wy.defineWidget({
+  name: "JSStack",
+  constraint: {
+    type: "JSStack",
+    obj: null,
+  },
+  structure: {
+    message: "No JS stack available.",
+  },
+});
+
+
+wy.defineWidget({
+  name: "native-stack-frame",
+  doc: "a native stack frame, does nothing but maybe someday dxr/mxr?",
+  constraint: {
+    type: "native-stack-frame",
+  },
+  structure: {
+    location: wy.bind(wy.SELF),
+  }
+});
+
+wy.defineWidget({
+  name: "native-stack",
+  constraint: {
+    type: "native-stack",
+  },
+  structure: {
+    header: "Native Stack:",
+    frames: wy.vertList({type: "native-stack-frame"}, wy.SELF),
+  },
+  style: {
+    frames: [
+      "margin-left: 1em;",
+      "color: gray;",
+    ],
+  },
+});
+
+wy.defineWidget({
+  name: "native-stack",
+  constraint: {
+    type: "native-stack",
+    obj: null,
+  },
+  structure: {
+    message: "No native stack available.",
+  }
+});
+
 var EV_ELOOP_EXECUTE = 4096, EV_ELOOP_SCHEDULE = 4097;
 
 var eventNameMap = wy.defineLocalizedMap("event names", {
@@ -155,7 +222,41 @@ wy.defineWidget({
     header1: [
       "color: #607080;",
     ],
+    kids: [
+      "margin-left: 1em;",
+    ],
+    "kids-item": [
+      "border: 1px solid gray;",
+      "margin-bottom: 0.5em;",
+      "padding: 2px;",
+    ],
   },
 });
+
+wy.defineWidget({
+  name: "event-eloop-schedule",
+  doc: "event loop scheduling; show the stacks",
+  constraint: {
+    type: "event",
+    obj: { type: EV_ELOOP_SCHEDULE },
+  },
+  structure: {
+    header: "Runnable Scheduled",
+    jsStack: wy.widget({type: "JSStack"}, ["data", "jsstack"]),
+    nativeStack: wy.widget({type: "native-stack"}, ["data", "stack"]),
+  },
+  style: {
+    header: [
+      "display: block;",
+      "margin-bottom: 4px;",
+    ],
+    // this is the script name... perhaps we should switch to named?
+    header1: [
+      "color: #607080;",
+    ],
+    jsStack: "margin-bottom: 4px;",
+  },
+});
+
 
 }); // end require.def
