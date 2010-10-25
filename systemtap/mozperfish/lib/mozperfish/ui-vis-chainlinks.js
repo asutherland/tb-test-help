@@ -270,15 +270,29 @@ wy.defineWidget({
       },
       {
         name: "majorgroup",
-        label: "Group By",
+        label: "Major Group By",
         values: [
           {
             label: "Thread",
             value: "thread",
           },
           {
-            label: "Causal Family",
-            value: "family",
+            label: "Causal Clustering",
+            value: "cluster",
+          },
+        ],
+      },
+      {
+        name: "minorgroup",
+        label: "Minor Group By",
+        values: [
+          {
+            label: "Event Type",
+            value: "event",
+          },
+          {
+            label: "Thread",
+            value: "thread",
           },
         ],
       },
@@ -369,9 +383,7 @@ wy.defineWidget({
           .zings(chainer.zings)
           .phaseLabelMargin(80)
           .contextIndent(20)
-          .eventFromNode(function(n) { return n ? n.event : n; })
-          .group(function(d) { return d ? d.thread_idx : -1; })
-          .kind(function(d) { return d.semEvent ? d.semEvent.type : -1; });
+          .eventFromNode(function(n) { return n ? n.event : n; });
 
         this._updateConfig(false);
       }
@@ -541,6 +553,18 @@ wy.defineWidget({
     _durationWall: function(e) {
       return e.duration;
     },
+    _groupThread: function(d) {
+      return d ? d.thread_idx : -1;
+    },
+    _kindEventType: function(d) {
+      return d.semEvent ? d.semEvent.type : -1;
+    },
+    _groupCluster: function(d) {
+      return d ? d.cluster : -1;
+    },
+    _kindThread: function(d) {
+      return d.event ? d.event.thread_idx : -1;
+    },
     _updateConfig: function(aReset) {
       var config = this.obj;
       switch (config.timebase) {
@@ -553,6 +577,28 @@ wy.defineWidget({
         default:
           this.graph.time(this._timeWall);
           this.graph.duration(this._durationWall);
+          break;
+      }
+
+      switch (config.majorgroup) {
+        case "cluster":
+          this.graph.group(this._groupCluster);
+          break;
+
+        case "thread":
+        default:
+          this.graph.group(this._groupThread);
+          break;
+      }
+
+      switch (config.minorgroup) {
+        case "event":
+          this.graph.kind(this._kindEventType);
+          break;
+
+        case "thread":
+        default:
+          this.graph.kind(this._kindThread);
           break;
       }
 

@@ -106,6 +106,19 @@ function ChainLink(event) {
   this.outlinks = [];
 }
 ChainLink.prototype = {
+  linkOutgoing: function(other) {
+    this.outlinks.push(other);
+    other.inlinks.push(this);
+    // XXX hideous propagation of ill-named "clusters"
+    // (currently just names the thread of the root of the causal chain
+    //  which pretty much only happens because we fail to properly attribute
+    //  some events on non-main-threads.)
+    // (it needs to be on the event so the current groupCluster function,
+    //  because it takes an event.  It 'needs' to come from the ChainLink
+    //  because the thread root chain link has no event associated/is null.
+    //  obviously, lots of potential work here!)
+    other.event.cluster = other.cluster = this.cluster;
+  },
   _markHelper: function(valattr, val, attrname) {
     var list = this[attrname];
     for (var i = 0; i < list.length; i++) {
@@ -371,8 +384,7 @@ CausalChainer.prototype = {
         }
 
         link = new ChainLink(event);
-        parent_link.outlinks.push(link);
-        link.inlinks.push(parent_link);
+        parent_link.linkOutgoing(link);
 
         // unwrap JS crossings...
         if (event.children.length === 1 &&
@@ -396,8 +408,7 @@ CausalChainer.prototype = {
 
           // create a new link for the current dude
           link = new ChainLink(event);
-          parent_link.outlinks.push(link);
-          link.inlinks.push(parent_link);
+          parent_link.linkOutgoing(link);
 
           // put that link in the pending sockets map because sockets are
           //  inherently sequential
@@ -425,14 +436,14 @@ CausalChainer.prototype = {
         }
         if (thread_roots[event.thread_idx] === null) {
           thread_link = thread_roots[event.thread_idx] = new ChainLink(null);
+          thread_link.cluster = event.thread_idx;
           self.rootLinks.push(thread_link);
         }
         else {
           thread_link = thread_roots[event.thread_idx];
         }
         link = new ChainLink(event);
-        thread_link.outlinks.push(link);
-        link.inlinks.push(thread_link);
+        thread_link.linkOutgoing(link);
         this._walk_events(event, link);
       }
     }
@@ -506,8 +517,7 @@ CausalChainer.prototype = {
 
         // create a link for this dude at least for raw visualization purposes
         kid_link = new ChainLink(event);
-        link.outlinks.push(kid_link);
-        kid_link.inlinks.push(link);
+        link.linkOutgoing(kid_link);
       }
     }
     // -- GC

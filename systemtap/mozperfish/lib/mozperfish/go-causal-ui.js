@@ -111,6 +111,7 @@ exports.chewAndShow = function(perfData) {
       layout: "timey",
       timebase: "wall",
       majorgroup: "thread",
+      minorgroup: "event",
     },
     // tab state
     tabIndex: 0,
