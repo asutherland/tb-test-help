@@ -192,7 +192,6 @@ wy.defineWidget({
   },
   receive: {
     updateConfig: function(name, newValue) {
-      console.log("being told to change", name, "to", newValue);
       // bail if we already have the given state
       if (this.obj[name] === newValue)
         return;
@@ -201,9 +200,12 @@ wy.defineWidget({
 
       // a change in layout algorithm requires a complete rebuild.
       if (name === "layout") {
+        this._rebuild(true);
       }
-
-      this._updateConfig(true);
+      // everything else can just do a re-layout
+      else {
+        this._updateConfig(true);
+      }
       if (this.activePopup)
         this.activePopup.update();
     },
@@ -284,14 +286,15 @@ wy.defineWidget({
     preInit: function() {
       this.activePopup = null;
       this.popupClosedBy = null;
+      this._prepData();
       this._rebuild();
     },
-    _rebuild: function() {
+    _prepData: function() {
+      var nodes = this.nodes = [];
+      var links = this.links = [];
+
       var chainer = this.__context.chainer;
       var self = this;
-
-      var nodes = [];
-      var links = [];
 
       // depth-first traversal
       function walkLink(link) {
@@ -312,6 +315,32 @@ wy.defineWidget({
       for (var i = 0; i < chainer.rootLinks.length; i++) {
         walkLink(chainer.rootLinks[i]);
       }
+    },
+    _rebuild: function(aReset) {
+      var nodes = this.nodes, links = this.links;
+
+      if (aReset) {
+        // it is vitally important to kill off the setInterval the
+        //  force-directed graph uses.
+        if ("$timer" in this.graph) {
+          clearInterval(this.graph.$timer);
+        }
+        var kanvaz = this.kanvaz_element;
+        while (kanvaz.lastChild)
+          kanvaz.removeChild(kanvaz.lastChild);
+
+        // the force-directed graph really does not want to start from our
+        //  initial layout.
+        for (var iNode = 0; iNode < nodes.length; iNode++) {
+          var node = nodes[iNode];
+          delete node.x;
+          delete node.y;
+        }
+      }
+
+      var chainer = this.__context.chainer;
+      var self = this;
+
 
       var WIDTH = 1024, HEIGHT = 1024;
       var vis = this.vis = new pv.Panel()
@@ -320,22 +349,32 @@ wy.defineWidget({
         .canvas(this.kanvaz_element)
         .margin(4)
         .fillStyle("white");
-        //.event("mousedown", pv.Behavior.pan());
-        //.event("mousewheel", pv.Behavior.zoom());
 
-      var graph = this.graph = vis.add(pv.Layout.Timey) // pv.Layout.Force
-        .nodes(nodes)
-        .links(links)
-        .phases(chainer.phases)
-        .contexts(chainer.contexts)
-        .zings(chainer.zings)
-        .phaseLabelMargin(80)
-        .contextIndent(20)
-        .eventFromNode(function(n) { return n ? n.event : n; })
-        .group(function(d) { return d ? d.thread_idx : -1; })
-        .kind(function(d) { return d.semEvent ? d.semEvent.type : -1; });
+      var graph;
+      if (this.obj.layout === "force") {
+        vis
+          .event("mousedown", pv.Behavior.pan())
+          .event("mousewheel", pv.Behavior.zoom());
 
-      this._updateConfig(false);
+        graph = this.graph = vis.add(pv.Layout.Force)
+          .nodes(nodes)
+          .links(links);
+      }
+      else {
+        graph = this.graph = vis.add(pv.Layout.Timey)
+          .nodes(nodes)
+          .links(links)
+          .phases(chainer.phases)
+          .contexts(chainer.contexts)
+          .zings(chainer.zings)
+          .phaseLabelMargin(80)
+          .contextIndent(20)
+          .eventFromNode(function(n) { return n ? n.event : n; })
+          .group(function(d) { return d ? d.thread_idx : -1; })
+          .kind(function(d) { return d.semEvent ? d.semEvent.type : -1; });
+
+        this._updateConfig(false);
+      }
 
       var normalLinkColor = pv.color("rgba(0,0,0,.2)");
       var selectedLinkColor = pv.color("rgba(255,0,0,.5)");
@@ -351,84 +390,85 @@ wy.defineWidget({
 
       var colors = pv.Colors.category20();
 
-      var initColor = pv.color("hsl(30, 50%, 94%)");
-      var runColor = pv.color("hsl(90, 50%, 94%)");
-      var quitColor = pv.color("hsl(0, 50%, 94%)");
-      var testAColor = pv.color("hsl(240, 50%, 94%)");
-      var testBColor = pv.color("hsl(270, 50%, 94%)");
-      var otherColor = pv.color("hsl(0, 0%, 94%)");
-      var phaseBar = graph.phase.add(pv.Bar)
-        .fillStyle(function(p) {
-                     if (p.kind == "init") {
-                       if (p.name == "load")
-                         return initColor;
-                       else
-                         return runColor;
-                     }
-                     else if (p.kind == "test") {
+      if (this.obj.layout === "timey") {
+        var initColor = pv.color("hsl(30, 50%, 94%)");
+        var runColor = pv.color("hsl(90, 50%, 94%)");
+        var quitColor = pv.color("hsl(0, 50%, 94%)");
+        var testAColor = pv.color("hsl(240, 50%, 94%)");
+        var testBColor = pv.color("hsl(270, 50%, 94%)");
+        var otherColor = pv.color("hsl(0, 0%, 94%)");
+        var phaseBar = graph.phase.add(pv.Bar)
+          .fillStyle(function(p) {
+                       if (p.kind == "init") {
+                         if (p.name == "load")
+                           return initColor;
+                         else
+                           return runColor;
+                       }
+                       else if (p.kind == "test") {
+                         if (this.index % 2)
+                           return testAColor;
+                         else
+                           return testBColor;
+                       }
+                       else if (p.kind == "shutdown") {
+                         return quitColor;
+                       }
+                       else {
+                         return otherColor;
+                       }
+                     })
+          .event("click", function (p) {
+                   selectifyNode(null);
+                 });
+        phaseBar.add(pv.Label)
+          .top(function() { return phaseBar.top(); })
+          .left(function() { return phaseBar.left(); })
+          .textAlign("left")
+          .textBaseline("top")
+          .textStyle("black")
+          .text(function(p) { return p.kind + ": " + p.name; });
+
+        var zebraContextA = pv.color("rgba(128, 128, 128, 0.2)");
+        var zebraContextB = pv.color("rgba(160, 160, 160, 0.2)");
+        var contextBar = graph.context.add(pv.Bar)
+          .fillStyle(function(c) {
                        if (this.index % 2)
-                         return testAColor;
+                         return zebraContextA;
                        else
-                         return testBColor;
-                     }
-                     else if (p.kind == "shutdown") {
-                       return quitColor;
-                     }
-                     else {
-                       return otherColor;
-                     }
-                   })
-        .event("click", function (p) {
-                 selectifyNode(null);
-               });
-      phaseBar.add(pv.Label)
-        .top(function() { return phaseBar.top(); })
-        .left(function() { return phaseBar.left(); })
-        .textAlign("left")
-        .textBaseline("top")
-        .textStyle("black")
-        .text(function(p) { return p.kind + ": " + p.name; });
+                         return zebraContextB;
+                     });
+        contextBar.add(pv.Label)
+          .top(function() { return contextBar.top(); })
+          .left(function() { return contextBar.left(); })
+          .textAlign("left")
+          .textBaseline("top")
+          .textStyle("black")
+          .text(function(c) { return c.name; })
+          // Only show the label if we have enough visible space before our first
+          //  child.
+          .visible(function (c) { return c.safe_dy > 6; });
 
-      var zebraContextA = pv.color("rgba(128, 128, 128, 0.2)");
-      var zebraContextB = pv.color("rgba(160, 160, 160, 0.2)");
-      var contextBar = graph.context.add(pv.Bar)
-        .fillStyle(function(c) {
-                     if (this.index % 2)
-                       return zebraContextA;
-                     else
-                       return zebraContextB;
-                   });
-      contextBar.add(pv.Label)
-        .top(function() { return contextBar.top(); })
-        .left(function() { return contextBar.left(); })
-        .textAlign("left")
-        .textBaseline("top")
-        .textStyle("black")
-        .text(function(c) { return c.name; })
-        // Only show the label if we have enough visible space before our first
-        //  child.
-        .visible(function (c) { return c.safe_dy > 6; });
-
-      var gcColor = pv.color("rgba(192, 192, 255, 0.5)");
-      var latencyColor = pv.color("rgba(255, 192, 192, 0.5)");
-      var zingBar = graph.zing.add(pv.Bar)
-        .fillStyle(function(z) {
-                     if (z.kind == "gc")
-                       return gcColor;
-                     else
-                       return latencyColor;
-                   });
+        var gcColor = pv.color("rgba(192, 192, 255, 0.5)");
+        var latencyColor = pv.color("rgba(255, 192, 192, 0.5)");
+        var zingBar = graph.zing.add(pv.Bar)
+          .fillStyle(function(z) {
+                       if (z.kind == "gc")
+                         return gcColor;
+                       else
+                         return latencyColor;
+                     });
+      }
 
       graph.link.add(pv.Line);
 
-      var curSelected;
       function selectifyNode(d) {
-        if (curSelected)
-          curSelected.clearMark();
+        if (self.curSelected)
+          self.curSelected.clearMark();
         if (d)
           d.markSelected();
 
-        curSelected = d;
+        self.curSelected = d;
         vis.render();
       };
 
@@ -436,7 +476,7 @@ wy.defineWidget({
       var ancestorColor = pv.color("hsl(0, 100%, 75%)"),
           selectedColor = pv.color("hsl(0, 100%, 50%)"),
           descendentColor = pv.color("hsl(0, 100%, 38%)");
-      graph.node.add(pv.Dot)
+      var nodeDot = graph.node.add(pv.Dot)
         .shape(function(d) {
                  if (d.mark)
                    return "square";
@@ -473,14 +513,19 @@ wy.defineWidget({
                    })
         .lineWidth(1)
         .title(function(d) { return d.event ? d.event.gseq : 0; })
-        //.event("mousedown", pv.Behavior.drag())
         .event("mouseover", selectifyNode)
         .event("click", function(n) {
-                 self.emit_clickedEvent(n.event);
+                 // the synthetic root should not be clickable!
+                 if (n.event)
+                   self.emit_clickedEvent(n.event);
                  console.log("clicked on", n);
                });
-        //.event("drag", graph);
 
+      if (this.obj.layout === "force") {
+        nodeDot
+          .event("mousedown", pv.Behavior.drag())
+          .event("drag", graph);
+      }
 
       vis.render();
     },
