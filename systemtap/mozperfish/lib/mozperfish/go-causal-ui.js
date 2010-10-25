@@ -72,10 +72,13 @@ wy.defineWidget({
   constraint: {
     type: "top-level",
   },
-  provideContext: {zing_blamer: "zing_blamer"},
+  provideContext: {
+    chainer: "chainer",
+    zing_blamer: "zing_blamer",
+  },
   emit: ["openTab"],
   structure: {
-    vis: wy.widget({type: "vis-chainlinks"}, "chainer"),
+    vis: wy.widget({type: "vis-chainlinks"}, "visConfig"),
     tabs: wy.widget({type: "tabbox"}, wy.SELF),
   },
   receive: {
@@ -103,6 +106,13 @@ exports.chewAndShow = function(perfData) {
   var rootObj = {
     chainer: chainer,
     zing_blamer: zing_blamer,
+    // vis
+    visConfig: {
+      layout: "timey",
+      timebase: "wall",
+      majorgroup: "thread",
+    },
+    // tab state
     tabIndex: 0,
     tabs: [
       {kind: "zings", name: "Zings!", zinger: zing_blamer},

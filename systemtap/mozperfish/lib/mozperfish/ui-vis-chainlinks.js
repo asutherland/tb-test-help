@@ -54,7 +54,114 @@ var wy = exports.wy =
                        clickToFocus: true});
 
 /**
+ * A configuration menu which is bound to an object tree describing the set of
+ *  configuration options.  The configuration values are exposed to us via
+ *  context.  Changes to the configuration are requested via emitting
+ *  updateConfig signals.
+ */
+wy.defineWidget({
+  name: "config-menu-root",
+  focus: wy.focus.domain.vertical("parameters"),
+  constraint: {
+    type: "config-menu",
+  },
+  structure: {
+    parameters: wy.vertList({type: "config-menu-parameter"}, wy.SELF),
+  },
+  style: {
+    root: [
+      "background-color: #888888;",
+      "border: 1px solid #666666;",
+      "padding: 4px;",
+    ]
+  },
+});
+
+wy.defineWidget({
+  name: "config-menu-parameter",
+  focus: wy.focus.container.vertical("values"),
+  constraint: {
+    type: "config-menu-parameter",
+  },
+  provideContext: {
+    parameterName: "name",
+  },
+  structure: {
+    label: wy.bind("label"),
+    values: wy.vertList({type: "config-menu-value"}, "values"),
+  },
+  style: {
+    root: [
+      "margin-bottom: 0.5em;",
+    ],
+    label: [
+      "display: block;",
+      "background-color: #aaaaaa;",
+      "color: black;",
+      "padding: 2px;",
+    ],
+    values: [
+      "background-color: #444444;",
+      "padding: 2px;",
+    ],
+    "values-item": [
+      "margin-bottom: 2px;",
+    ],
+  },
+});
+
+wy.defineWidget({
+  name: "config-menu-value",
+  emit: ["updateConfig"],
+  constraint: {
+    type: "config-menu-value",
+  },
+  focus: wy.focus.item,
+  structure: {
+    label: wy.bind("label", {active: wy.computed("isActive")}),
+  },
+  impl: {
+    isActive: function() {
+      var context = this.__context;
+      return context.config[context.parameterName] == this.obj.value;
+    },
+  },
+  events: {
+    root: {
+      command: function() {
+        this.emit_updateConfig(this.__context.parameterName, this.obj.value);
+      },
+    },
+  },
+  style: {
+    root: {
+      _: [
+        "background-color: #666666;",
+        "padding: 2px;",
+        "cursor: pointer;",
+      ],
+      ":hover": [
+        "background-color: #666688;",
+      ],
+      ":focused": [
+        "outline: 1px dotted blue;",
+      ],
+    },
+    label: {
+      _: [
+        "color: white;",
+      ],
+      '[active="true"]': [
+        "color: blue;",
+      ],
+    }
+  }
+});
+
+
+/**
  * Visualization that can be parameterized on:
+ * - layout algorithm: time/grouped versus free-form force-directed
  * - time base: wall clock vs. global sequence
  * - major grouping: thread vs. causal family
  */
@@ -64,17 +171,87 @@ wy.defineWidget({
     type: "vis-chainlinks",
   },
   emit: ["clickedEvent"],
+  // expose our config to the config menu.
+  provideContext: {
+    config: wy.SELF,
+  },
+  popups: {
+    configMenu: {
+      constraint: {
+        type: "config-menu",
+      },
+      clickAway: true,
+      position: {
+        leftBelow: "configButton"
+      },
+    },
+  },
   structure: {
     kanvaz: {}, // so named to avoid confusion about whether it's a canvas. no!
+    configButton: wy.button("..."),
+  },
+  receive: {
+    updateConfig: function(name, newValue) {
+      console.log("being told to change", name, "to", newValue);
+      // bail if we already have the given state
+      if (this.obj[name] === newValue)
+        return;
+      // update our state
+      this.obj[name] = newValue;
 
+      // a change in layout algorithm requires a complete rebuild.
+      if (name === "layout") {
+      }
+
+      this._updateConfig(true);
+      if (this.activePopup)
+        this.activePopup.update();
+    },
+  },
+  events: {
+    configButton: {
+      command: function() {
+        // If the user clicked on us while the popup was active, don't
+        //  re-trigger the popup; the user was probably trying to close us.
+        if (this.popupClosedBy === this.configButton_element) {
+          this.popupClosedBy = null;
+          return;
+        }
+
+        // The menu is rendering our parameters and should be positioned
+        //  relative to this, the visualization binding.
+        var self = this;
+        this.activePopup = this.popup_configMenu(this.parameters,
+                                                 this,
+                                                 function(positiveResult,
+                                                          clickedOn) {
+          self.activePopup = null;
+          self.popupClosedBy = clickedOn;
+        });
+      }
+    }
   },
   impl: {
     /**
      * Meta-data about the visualization's configurable aspects for exposure
      *  for manipulation via wmsy UI.  Since this is about the widget binding
-     *  it goes on the widget binding.  Madness, no?
+     *  it goes on the widget binding.
      */
     parameters: [
+      {
+        name: "layout",
+        label: "Layout Algorithm",
+        values: [
+          {
+            label: "Vertical Time, Horizontal Grouping",
+            value: "timey",
+          },
+          {
+            label: "Force-Directed in 2d",
+            value: "force",
+          },
+        ],
+      },
       {
         name: "timebase",
         label: "Time Base",
@@ -105,7 +282,12 @@ wy.defineWidget({
       },
     ],
     preInit: function() {
-      var chainer = this.obj;
+      this.activePopup = null;
+      this.popupClosedBy = null;
+      this._rebuild();
+    },
+    _rebuild: function() {
+      var chainer = this.__context.chainer;
       var self = this;
 
       var nodes = [];
@@ -132,7 +314,7 @@ wy.defineWidget({
       }
 
       var WIDTH = 1024, HEIGHT = 1024;
-      var vis = new pv.Panel()
+      var vis = this.vis = new pv.Panel()
         .width(WIDTH)
         .height(HEIGHT)
         .canvas(this.kanvaz_element)
@@ -141,7 +323,7 @@ wy.defineWidget({
         //.event("mousedown", pv.Behavior.pan());
         //.event("mousewheel", pv.Behavior.zoom());
 
-      var graph = vis.add(pv.Layout.Timey) // pv.Layout.Force
+      var graph = this.graph = vis.add(pv.Layout.Timey) // pv.Layout.Force
         .nodes(nodes)
         .links(links)
         .phases(chainer.phases)
@@ -150,12 +332,10 @@ wy.defineWidget({
         .phaseLabelMargin(80)
         .contextIndent(20)
         .eventFromNode(function(n) { return n ? n.event : n; })
-        //.time(function(d) { return d ? d.gseq : d; })
-        .time(function(d) { return d ? d.time : d; })
-        //.duration(function(e) { return 1; })
-        .duration(function (e) { return e.duration; })
         .group(function(d) { return d ? d.thread_idx : -1; })
         .kind(function(d) { return d.semEvent ? d.semEvent.type : -1; });
+
+      this._updateConfig(false);
 
       var normalLinkColor = pv.color("rgba(0,0,0,.2)");
       var selectedLinkColor = pv.color("rgba(255,0,0,.5)");
@@ -304,7 +484,50 @@ wy.defineWidget({
 
       vis.render();
     },
-  }
+    _timeGseq: function(d) {
+      return d ? d.gseq : d;
+    },
+    _durationGseq: function() {
+      return 1;
+    },
+    _timeWall: function(d) {
+      return d ? d.time : d;
+    },
+    _durationWall: function(e) {
+      return e.duration;
+    },
+    _updateConfig: function(aReset) {
+      var config = this.obj;
+      switch (config.timebase) {
+        case "gseq":
+          this.graph.time(this._timeGseq);
+          this.graph.duration(this._durationGseq);
+          break;
+
+        case "wall":
+        default:
+          this.graph.time(this._timeWall);
+          this.graph.duration(this._durationWall);
+          break;
+      }
+
+      if (aReset) {
+        this.graph.reset();
+        this.vis.render();
+      }
+    },
+  },
+  style: {
+    root: [
+      // make us a containing block for position: absolute children
+      "position: relative;",
+    ],
+    configButton: [
+      "position: absolute;",
+      "right: 0px;",
+      "top: 0px;",
+    ],
+  },
 });
 
 }); // end require.def
