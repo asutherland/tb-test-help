@@ -795,7 +795,7 @@ probe process(@@exe:).statement(@@statement:ref),
 
   printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":11,\"time\":%d,\"data\":{\"message\":\"%s\"}}\n",
          ctx, seq, depth,
-         now - dawn_of_time, msg);  
+         now - dawn_of_time, json_escape(msg));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2082,21 +2082,37 @@ function user_u16_string:string (addr: long, nchars: long) %{ /* pure */ /* unpr
         *ocp++ = 'X';
       else {
         char c = (char)*icp;
-        if (c == '"') {
-          *ocp++ = '\\';
-          *ocp++ = '"';
-        }
-        else if (c == '\n') {
-          *ocp++ = '\\';
-          *ocp++ = 'n';
-        }
-        // convert tabs to single spaces. tabs are stupid and escaping them
-        //  legally takes too much space.
-        else if (c == '\t') {
-          *ocp++ = ' ';
-        }
-        else {
-          *ocp++ = c;
+        switch(c) {
+          case '\n':
+            *ocp++ = '\\';
+            *ocp++ = 'n';
+            break;
+          case '\\':
+            *ocp++ = '\\';
+            *ocp++ = '\\';
+            break;
+          case '\t':
+            *ocp++ = '\\';
+            *ocp++ = 't';
+            break;
+          case '\b':
+            *ocp++ = '\\';
+            *ocp++ = 'b';
+            break;
+          case '\f':
+            *ocp++ = '\\';
+            *ocp++ = 'f';
+            break;
+          case '\r':
+            *ocp++ = '\\';
+            *ocp++ = 'r';
+            break;
+          case '"': // " (dumb emacs mode)
+            *ocp++ = '\\';
+            // fall-through
+          default:
+            *ocp++ = c;
+            break;
         }
       }
     }
@@ -2116,4 +2132,47 @@ function basename:string (str: string) %{ /* pure */ /* unprivileged */
   }
 
   strlcpy(THIS->__retvalue, last_slash, strlen(last_slash) + 1);
+%}
+
+/**
+ * Make str JSON-safe by escaping stuff.
+ */
+function json_escape:string (str: string) %{ /* pure */ /* unprivileged */
+  char c, *cp = THIS->str, *ocp = THIS->__retvalue,
+    *end = &THIS->__retvalue[MAXSTRINGLEN - 2];
+  while ((c = *cp) && ocp < end) { // need space for escape and null term
+    switch (c) {
+      case '\n':
+        *ocp++ = '\\';
+        *ocp++ = 'n';
+        break;
+      case '\\':
+        *ocp++ = '\\';
+        *ocp++ = '\\';
+        break;
+      case '\t':
+        *ocp++ = '\\';
+        *ocp++ = 't';
+        break;
+      case '\b':
+        *ocp++ = '\\';
+        *ocp++ = 'b';
+        break;
+      case '\f':
+        *ocp++ = '\\';
+        *ocp++ = 'f';
+        break;
+      case '\r':
+        *ocp++ = '\\';
+        *ocp++ = 'r';
+        break;
+      case '"': // " (dumb emacs mode)
+        *ocp++ = '\\';
+        // fall-through
+      default:
+        *ocp++ = c;
+        break;
+    }
+  }
+  *ocp = '\0';
 %}
