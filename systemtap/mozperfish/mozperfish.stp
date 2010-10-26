@@ -2140,7 +2140,7 @@ function basename:string (str: string) %{ /* pure */ /* unprivileged */
 function json_escape:string (str: string) %{ /* pure */ /* unprivileged */
   char c, *cp = THIS->str, *ocp = THIS->__retvalue,
     *end = &THIS->__retvalue[MAXSTRINGLEN - 2];
-  while ((c = *cp) && ocp < end) { // need space for escape and null term
+  while ((c = *cp++) && ocp < end) { // need space for escape and null term
     switch (c) {
       case '\n':
         *ocp++ = '\\';
