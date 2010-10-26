@@ -854,6 +854,8 @@ probe process(@@lib:bin/libxul.so).function("js_GC").return {
 
 // === Event scheduling (0x1001 = 4097)
 
+// == nsThread
+
 // We place ourselves in the PutEvent logic so that we cover the synchronous
 //  and normal cases.  We, of course, need to make sure that our probe point
 //  happens before the actual enqueuing, otherwise we may end up seeing the
@@ -881,8 +883,27 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   printf(",\"stack\":\"%s\"}}\n", ubacktrace());
 }
 
+// == nsThreadPool
+
+probe process(@@lib:bin/libxul.so).function("nsThreadPool::PutEvent") {
+  now = gettimeofday_ns();
+  ctx = tid();
+  depth = t_depth[ctx];
+  seq = gseq++;
+
+  printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":4097,\"time\":%d,\"data\":{\"eventId\":%d,\"poolId\":%d,\"jsstack\":",
+         ctx, seq, depth,
+         now - dawn_of_time, $event, $this);
+  // dump a jsstack if we can find one
+  dump_jsstack_under_native();
+  // dump a native stack too
+  printf(",\"stack\":\"%s\"}}\n", ubacktrace());
+}
+
 
 // === Event execution (0x1000 = 4096)
+
+// == nsThread
 
 //@@file:mozilla/xpcom/threads/nsThread.cpp
 //@@method:nsThread::ProcessNextEvent
@@ -911,6 +932,56 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   track_leave(0x1000, "");
 }
 
+// == nsThreadPool
+
+// because of loop structure we need to infer conclusion from jumping back up
+//  to the top of the loop or falling out of the loop, so we need the
+//  following to track, regrettably...
+global t_thread_pool_active;
+
+//@@file:mozilla/xpcom/threads/nsThreadPool.cpp
+//@@method:nsThreadPool::Run
+//@@lineseek:nsThreadPool::Run()
+//@@lineseek:if (event) {
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
+  // $event->mRawPtr's value is the address of an instance on the heap
+  // The first pointer at that location is the pointer to the vtable.
+  rawPtr = $event->mRawPtr;
+  if (rawPtr)
+    eventAddr = get_vtbl_ptr_from_instance(rawPtr);
+  else
+    eventAddr = 0;
+
+  data = sprintf("\"eventId\":%d,\"poolId\":%d,\"scriptName\":\":!vt:%x\",\"scriptLine\":0",
+                 rawPtr, $this, eventAddr);
+  track_enter(0x1000, data);
+  t_thread_pool_active[tid()] = 1;
+}
+
+
+//@@file:mozilla/xpcom/threads/nsThreadPool.cpp
+//@@method:nsThreadPool::Run
+//@@lineseek:nsThreadPool::Run()
+//@@lineseek:nsCOMPtr<nsIRunnable> event;
+//@@lineseek:nsAutoMonitor mon(mEvents.Monitor());
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
+  ctx = tid();
+  if (t_thread_pool_active[ctx]) {
+    track_leave(0x1000, "");
+    t_thread_pool_active[ctx] = 0;
+  }
+}
+
+//@@file:mozilla/xpcom/threads/nsThreadPool.cpp
+//@@method:nsThreadPool::Run
+//@@lineseek:nsThreadPool::Run()
+//@@lineseek:if (event) {
+//@@lineseek:if (listener) {
+probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
+  track_leave(0x1000, "");
+  // we're leaving the loop; kill the entry in the map
+  delete t_thread_pool_active[tid()];
+}
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1034,7 +1105,6 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   depth = t_depth[ctx];
   seq = gseq++;
 
-  singleShot = ($aType == 0);
   printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":4145,\"time\":%d,\"data\":{\"fd\":%d}}\n",
          ctx, seq, depth,
          now - dawn_of_time, $fd);
@@ -1053,7 +1123,6 @@ probe process(@@lib:bin/libxul.so).statement(@@statement:ref) {
   depth = t_depth[ctx];
   seq = gseq++;
 
-  singleShot = ($aType == 0);
   printf("{\"tid\":%d,\"gseq\":%d,\"depth\":%d,\"type\":4146,\"time\":%d,\"data\":{\"fd\":%d}}\n",
          ctx, seq, depth,
          now - dawn_of_time, $sock->mFD);
