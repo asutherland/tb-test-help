@@ -26,7 +26,7 @@
 #
 # Andrew Sutherland <asutherland@asutherland.org>, 2010
 
-import dbus, dbus.glib, gobject, subprocess
+import dbus, dbus.glib, gobject, subprocess, time
 
 
 class ProcessMinder(object):
@@ -54,7 +54,7 @@ class ProcessMinder(object):
         time.sleep(0.1)
         if self.pope.poll() is None:
             time.sleep(0.9)
-        if self.pope.popll() is None:
+        if self.pope.poll() is None:
             self.pope.kill()
         self.pope = None
 
@@ -68,6 +68,7 @@ class ProcessMinder(object):
 
         if self.pope.poll() is not None:
             # it died! oh noes!
+            self.pope = None
             print 'Restarting process'
             self.run()
         
