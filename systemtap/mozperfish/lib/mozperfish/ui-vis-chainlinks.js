@@ -53,6 +53,9 @@ var wy = exports.wy =
   new wmsy.WmsyDomain({id: "ui-vis-chainlinks", domain: "mozperfish",
                        clickToFocus: true});
 
+////////////////////////////////////////////////////////////////////////////////
+// Config Popup
+
 /**
  * A configuration menu which is bound to an object tree describing the set of
  *  configuration options.  The configuration values are exposed to us via
@@ -158,6 +161,8 @@ wy.defineWidget({
   }
 });
 
+////////////////////////////////////////////////////////////////////////////////
+// Vis Proper
 
 /**
  * Visualization that can be parameterized on:
@@ -461,15 +466,33 @@ wy.defineWidget({
           //  child.
           .visible(function (c) { return c.safe_dy > 6; });
 
-        var gcColor = pv.color("rgba(192, 192, 255, 0.5)");
-        var latencyColor = pv.color("rgba(255, 192, 192, 0.5)");
+        var gcFill = pv.color("rgba(192, 192, 255, 0.5)");
+        var gcStroke = pv.color("rgb(192, 192, 255)").darker(0.5);
+        var pollFill = pv.color("rgba(255, 255, 192, 0.5)");
+        var pollStroke = pv.color("rgb(255, 255, 192)");
+        var latencyFill = pv.color("rgba(255, 192, 192, 0.5)");
+        var latencyStroke = pv.color("rgb(255, 192, 192)");
         var zingBar = graph.zing.add(pv.Bar)
           .fillStyle(function(z) {
                        if (z.kind == "gc")
-                         return gcColor;
+                         return gcFill;
+                       else if (z.kind == "poll")
+                         return pollFill;
                        else
-                         return latencyColor;
-                     });
+                         return latencyFill;
+                     })
+          .strokeStyle(function(z) {
+                       if (z.kind == "gc")
+                         return gcStroke;
+                       else if (z.kind == "poll")
+                         return pollStroke;
+                       else
+                         return latencyStroke;
+                     })
+          .lineWidth(1)
+          .event("click", function(z) {
+                   self.emit_clickedEvent(z.event);
+                 });
       }
 
       graph.link.add(pv.Line);
@@ -525,8 +548,9 @@ wy.defineWidget({
                    })
         .lineWidth(1)
         .title(function(d) { return d.event ? d.event.gseq : 0; })
-        .event("mouseover", selectifyNode)
+        //.event("mouseover", selectifyNode)
         .event("click", function(n) {
+                 selectifyNode(n);
                  // the synthetic root should not be clickable!
                  if (n.event)
                    self.emit_clickedEvent(n.event);
@@ -620,5 +644,7 @@ wy.defineWidget({
     ],
   },
 });
+
+////////////////////////////////////////////////////////////////////////////////
 
 }); // end require.def

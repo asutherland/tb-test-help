@@ -74,6 +74,8 @@ var EV_XPCJS_CROSS = 4160, EV_JSEXEC_CROSS = 4161;
 var EV_PROXY_CALL = 4192;
 var EV_LATENCY = 8192;
 
+var REASON_POLL = "Waiting for event (poll)";
+
 /**
  * Models a linear run of events in a causal chain without splitting or merging.
  *  The piece tracks incoming and outgoing edges.  You can think of this as a
@@ -99,6 +101,8 @@ var MARK_SELECTED = 1, MARK_ANCESTOR = 2, MARK_DESCENDENT = 3;
  */
 function ChainLink(event) {
   this.event = this.semEvent = event;
+  if (event)
+    event.owningLink = this;
   this.mark = null;
   this.primary = false;
   this.synthetic = false;
@@ -325,8 +329,12 @@ CausalChainer.prototype = {
         }
         else {
           // non-events are fine
-          if (event.data.eventId === 0)
+          if (event.data.eventId === 0) {
+            if (event.children.length)
+              console.warn("eventId === 0 on event with children!", event);
+            this.pruneCount++;
             continue;
+          }
           console.warn("encountered unknown event id!",
                        event.data.eventId, event);
         }
@@ -455,6 +463,10 @@ CausalChainer.prototype = {
    */
   _walk_events: function CausalChainer__walk_events(event, link,
                                                     thread_idx, context) {
+    if (!("owningLink" in event))
+      event.owningLink = null;
+    event.heldByLink = link;
+
     var new_context, kid_link = link, zing;
     if (thread_idx === undefined)
       thread_idx = event.thread_idx;
@@ -529,7 +541,10 @@ CausalChainer.prototype = {
     // -- latency!
     else if (event.type === EV_LATENCY) {
       zing = new Zing();
-      zing.kind = "latency";
+      if (event.data.reason === REASON_POLL)
+        zing.kind = "poll";
+      else
+        zing.kind = "latency";
       zing.event = event;
       this.zings.push(zing);
     }

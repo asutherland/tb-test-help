@@ -90,6 +90,9 @@ wy.defineWidget({
   },
 });
 
+////////////////////////////////////////////////////////////////////////////////
+// Stacks
+
 wy.defineWidget({
   name: "JSStack",
   constraint: {
@@ -157,6 +160,87 @@ wy.defineWidget({
   }
 });
 
+////////////////////////////////////////////////////////////////////////////////
+// Data Bucket Display
+
+wy.defineWidget({
+  name: "generic-data-item",
+  constraint: {
+    type: "generic-data-item",
+    obj: {key: wy.WILD},
+  },
+  structure: {
+    key: wy.bind("key"),
+    value: wy.bind("value"),
+  },
+  style: {
+    key: [
+      "display: inline-block;",
+      "width: 6em;",
+      "color: gray;",
+    ],
+    value: [
+      "color: darkgray;",
+    ],
+  },
+});
+
+wy.defineWidget({
+  name: "event-generic-data-dump",
+  doc: "Use well-known names for specialized display and generic for all else",
+  constraint: {
+    type: "event-generic-data-dump",
+    obj: {
+    },
+  },
+  structure: {
+    generic: wy.vertList({type: "generic-data-item"}),
+    // these are unbound so we have to tell them what to show
+    jsStack: wy.widget({type: "JSStack"}),
+    nativeStack: wy.widget({type: "native-stack"}),
+  },
+  impl: {
+    postInit: function() {
+      var data = this.obj;
+      var generic = [];
+      for (var key in data) {
+        var val = data[key];
+        switch (key) {
+          case "jsstack":
+            this.jsStack_set(val);
+            break;
+          case "stack":
+            this.nativeStack_set(val);
+            break;
+          default:
+            generic.push({key: key, value: val});
+            break;
+        }
+      }
+      this.generic_set(generic);
+    }
+  },
+  style: {
+    root: [
+      "margin-left: 0.5em;",
+    ],
+  },
+});
+
+wy.defineWidget({
+  name: "event-generic-data-dump",
+  doc: "Use well-known names for specialized display and generic for all else",
+  constraint: {
+    type: "event-generic-data-dump",
+    obj: null,
+  },
+  structure: {
+  },
+});
+
+////////////////////////////////////////////////////////////////////////////////
+// Events
+
 var EV_ELOOP_EXECUTE = 4096, EV_ELOOP_SCHEDULE = 4097;
 
 var eventNameMap = wy.defineLocalizedMap("event names", {
@@ -198,6 +282,7 @@ wy.defineWidget({
   },
   structure: {
     eventType: "",
+    data: wy.widget({type: "event-generic-data-dump"}, "data"),
   },
   impl: {
     postInit: function() {
@@ -215,6 +300,7 @@ wy.defineWidget({
   },
   structure: {
     header: ["event loop: ", wy.bind(["data", "scriptName"])],
+    data: wy.widget({type: "event-generic-data-dump"}, "data"),
     kids: wy.vertList({type: "event"}, "children"),
   },
   style: {
@@ -258,5 +344,6 @@ wy.defineWidget({
   },
 });
 
+////////////////////////////////////////////////////////////////////////////////
 
 }); // end require.def
