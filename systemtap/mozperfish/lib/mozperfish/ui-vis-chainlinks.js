@@ -302,7 +302,7 @@ wy.defineWidget({
         ],
       },
     ],
-    preInit: function() {
+    postInit: function() {
       this.activePopup = null;
       this.popupClosedBy = null;
       this._prepData();

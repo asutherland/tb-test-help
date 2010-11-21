@@ -200,7 +200,7 @@ wy.defineWidget({
     nativeStack: wy.widget({type: "native-stack"}),
   },
   impl: {
-    postInit: function() {
+    postInitUpdate: function() {
       var data = this.obj;
       var generic = [];
       for (var key in data) {
@@ -285,7 +285,7 @@ wy.defineWidget({
     data: wy.widget({type: "event-generic-data-dump"}, "data"),
   },
   impl: {
-    postInit: function() {
+    postInitUpdate: function() {
       this.eventType_element.textContent = eventNameMap.lookup(this.obj.type);
     }
   },

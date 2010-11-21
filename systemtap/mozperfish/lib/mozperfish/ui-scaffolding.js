@@ -107,7 +107,7 @@ wy.defineWidget({
   },
   impl: {
     // we want to happen after the initial update pass so the child tabs exist.
-    postInit: function() {
+    postInitUpdate: function() {
       this._selectedIndex = null;
       // mark all the tabs except the tab index one as non-focusable.
       var panels = this.panels_element.children;

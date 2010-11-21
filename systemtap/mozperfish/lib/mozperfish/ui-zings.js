@@ -265,7 +265,7 @@ wy.defineWidget({
     commonStacks: wy.vertList({type: "common-stack"}, "displayList")
   },
   impl: {
-    preInit: function() {
+    postInit: function() {
       this.obj.normalizeForDisplay();
     },
   },
