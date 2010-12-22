@@ -89,11 +89,10 @@ wy.defineWidget({
         index = this.obj.tabs.length;
 
       // - perform the splice on the array
-      var objs = [obj];
       this.obj.tabs.splice(index, 0, obj);
       // - tell the view slices what we have wrought
-      this.headers_slice.splice(index, 0, objs);
-      this.panels_slice.splice(index, 0, objs);
+      this.headers_slice.postSplice(index, 0);
+      this.panels_slice.postSplice(index, 0);
 
       if (this._selectedIndex === index)
         this._selectedIndex++;
@@ -142,8 +141,8 @@ wy.defineWidget({
     _closeTab: function(index) {
       this.obj.tabs.splice(index, 1);
       // - tell the view slices what we have wrought
-      this.headers_slice.splice(index, 1);
-      this.panels_slice.splice(index, 1);
+      this.headers_slice.postSplice(index, 1);
+      this.panels_slice.postSplice(index, 1);
 
       // If we deleted the selected tab, switch to...
       if (index === this._selectedIndex) {
