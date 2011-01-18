@@ -41,12 +41,14 @@
 
 require.def("mozperfsh/ui-vis-chainlinks",
   [
-    "exports",
     "wmsy/wmsy",
+    "wmsy/opc/protovis",
+    "exports"
   ],
   function(
-    exports,
-    wmsy
+    wmsy,
+    pv,
+    exports
   ) {
 
 var wy = exports.wy =

@@ -45,7 +45,13 @@
  *  code.
  **/
 
-require.def("mozperfish/pv-layout-timey", [], function() {
+require.def("mozperfish/pv-layout-timey",
+  [
+    "wmsy/opc/protovis",
+  ],
+  function(
+    pv
+  ) {
 
 /**
  *
