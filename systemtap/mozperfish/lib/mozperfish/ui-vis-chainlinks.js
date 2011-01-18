@@ -182,6 +182,7 @@ wy.defineWidget({
   },
   popups: {
     configMenu: {
+      popupWidget: wy.libWidget({type: "popup"}),
       constraint: {
         type: "config-menu",
       },
