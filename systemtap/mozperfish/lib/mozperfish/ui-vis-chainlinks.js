@@ -192,6 +192,7 @@ wy.defineWidget({
       },
     },
   },
+  focus: wy.focus.container.vertical("configButton"),
   structure: {
     kanvaz: {}, // so named to avoid confusion about whether it's a canvas. no!
     configButton: wy.button("..."),

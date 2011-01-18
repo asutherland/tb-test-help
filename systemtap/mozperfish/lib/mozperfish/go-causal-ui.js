@@ -68,7 +68,7 @@ var wy = new wmsy.WmsyDomain({id: "go-causal-ui", domain: "mozperfish",
 
 wy.defineWidget({
   name: "top-level",
-  focus: wy.focus.domain.vertical("tabs"),
+  focus: wy.focus.domain.vertical("vis", "tabs"),
   constraint: {
     type: "top-level",
   },
